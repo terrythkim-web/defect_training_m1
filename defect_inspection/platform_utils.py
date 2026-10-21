@@ -126,12 +126,22 @@ def torch_accelerator() -> str | None:
             found = "cuda"
         else:
             mps = getattr(torch.backends, "mps", None)
-            if mps is not None and mps.is_available():
+            if mps is not None and mps.is_available() and _mps_works(torch):
                 found = "mps"
     except ImportError:
         pass
     _accelerator_cache.append(found)
     return found
+
+
+def _mps_works(torch) -> bool:
+    """is_available() is not enough: GitHub's macos-14 runners (virtual GPU) report MPS but every
+    allocation fails with "MPS backend out of memory (MPS allocated: 0 bytes …)". Run one tiny op."""
+    try:
+        x = torch.arange(6, dtype=torch.float32, device="mps").reshape(2, 3)
+        return (x @ x.T).cpu().tolist() == [[5.0, 14.0], [14.0, 50.0]]
+    except RuntimeError:
+        return False
 
 
 def resolve_device(requested: str | None = "auto", purpose: str = "predict") -> str:

@@ -113,14 +113,13 @@ def _check_device() -> str:
 def _check_apple() -> str:
     """macOS: a tensor operation on the Mac GPU (MPS) and the CoreML converter (Export tab)."""
     import coremltools
-    import torch
+
+    from defect_inspection.platform_utils import torch_accelerator
 
     detail = f"coremltools {coremltools.__version__}"
-    if torch.backends.mps.is_available():
-        x = torch.arange(6, dtype=torch.float32, device="mps").reshape(2, 3)
-        assert (x @ x.T).cpu().tolist() == [[5.0, 14.0], [14.0, 50.0]]
+    if torch_accelerator() == "mps":  # probes a real MPS tensor op
         return detail + ", MPS 연산 OK"
-    return detail + ", MPS 없음 (가상 머신이거나 Intel Mac) — CPU로 동작"
+    return detail + ", MPS 없음 또는 사용 불가 (가상 머신이거나 Intel Mac) — CPU로 동작"
 
 
 def _check_window() -> str:

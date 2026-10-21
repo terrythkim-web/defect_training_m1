@@ -105,6 +105,46 @@ def accelerator(monkeypatch):
     return set_to
 
 
+@pytest.mark.parametrize("op_works, expected", [(True, "mps"), (False, None)])
+def test_mps_needs_a_working_tensor_op(monkeypatch, op_works, expected):
+    # GitHub's macos-14 runners report MPS as available, but every allocation fails with
+    # "MPS backend out of memory (MPS allocated: 0 bytes …)"; then everything must use the CPU
+    import sys
+    import types
+
+    from defect_inspection import platform_utils as pu
+
+    class FakeTensor:
+        def reshape(self, *_):
+            return self
+
+        def __matmul__(self, _):
+            return self
+
+        @property
+        def T(self):  # noqa: N802
+            return self
+
+        def cpu(self):
+            return self
+
+        def tolist(self):
+            return [[5.0, 14.0], [14.0, 50.0]]
+
+    def arange(*_a, **_k):
+        if not op_works:
+            raise RuntimeError("MPS backend out of memory (MPS allocated: 0 bytes)")
+        return FakeTensor()
+
+    fake = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True)),
+        arange=arange, float32="float32")
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    monkeypatch.setattr(pu, "_accelerator_cache", [])
+    assert pu.torch_accelerator() == expected
+
+
 @pytest.mark.parametrize("accel, train, predict", [("cuda", "0", "0"), ("mps", "mps", "mps"), (None, "cpu", "cpu")])
 def test_auto_device_per_machine(accelerator, accel, train, predict):
     from defect_inspection.platform_utils import inference_devices, resolve_device

@@ -1,6 +1,7 @@
 """Compare tab (PROMPTS step 19, PRD F8.1-F8.4)."""
 
 import time
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings, Qt
@@ -157,7 +158,7 @@ def test_save_report_and_history(panel, window, qapp, monkeypatch):
     opened = []
     panel.open_url = opened.append
     panel.btn_open_report.click()
-    assert opened and opened[0].toLocalFile() == str(path)
+    assert opened and Path(opened[0].toLocalFile()) == path  # Windows: QUrl gives '/', str(path) '\\'
 
     monkeypatch.setattr("defect_inspection.ui.panels.compare_panel.QMessageBox.question",
                         lambda *a: __import__("PySide6.QtWidgets").QtWidgets.QMessageBox.StandardButton.No)
