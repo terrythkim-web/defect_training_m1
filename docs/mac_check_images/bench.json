@@ -1,0 +1,39 @@
+{
+  "environment": {
+    "os": "Darwin 27.0.0",
+    "machine": "arm64",
+    "python": "3.12.15",
+    "torch": "2.14.1",
+    "mps": true,
+    "cuda": false,
+    "chip": "Apple M1",
+    "mlx": "0.32.4",
+    "mlx_device": "Device(gpu, 0)"
+  },
+  "quick": false,
+  "training": {
+    "images": 64,
+    "imgsz": 640,
+    "batch": 16,
+    "cpu_s_per_epoch": 11.46,
+    "mps_s_per_epoch": 4.69
+  },
+  "infer_imgsz": 640,
+  "inference": {
+    "torch_cpu": 46.55,
+    "torch_mps": 20.63,
+    "onnxruntime_cpu": 31.73,
+    "onnxruntime_coreml": 8.33,
+    "coreml": 10.12
+  },
+  "step": {
+    "batch": 8,
+    "imgsz": 640,
+    "torch_cpu": 1483.6,
+    "torch_mps": 464.5,
+    "mlx": 988.5,
+    "mlx_compiled": 792.5
+  },
+  "decision": "MLX가 MPS 대비 0.59배 (기준 1.5배 미만) → MPS 유지, MLX 학습 엔진은 진행하지 않음",
+  "mps_over_mlx": 0.5861198738170347
+}

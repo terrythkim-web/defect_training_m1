@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "defect-inspection"
+version = "0.1.0"
+description = "DefectLab: defect labeling, augmentation, YOLO11 training and ONNX export"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6",
+    "ultralytics>=8.3",
+    "albumentations>=1.4",
+    "opencv-python>=4.9",
+    "numpy<2.4",  # coremltools 9.0 calls int() on 1-element arrays, which NumPy 2.4 refuses (CoreML export fails)
+    "tifffile",
+    "pyqtgraph>=0.13",
+    "onnx",
+    "onnxruntime",
+    "onnxslim>=0.1.82",  # ONNX simplify; listed so Ultralytics never pip-installs it at export time
+    "coremltools>=8; sys_platform == 'darwin'",  # CoreML export (Export tab, macOS only)
+    "jinja2",
+    "matplotlib",
+    "pydantic>=2",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+package = ["pyinstaller>=6.10"]  # packaging/build_{linux.sh,windows.ps1,mac.sh}
+# tools/bench_apple.py: MLX (Metal on macOS; the CPU build on Linux is enough for the numerics test)
+bench = ["mlx>=0.20; sys_platform == 'darwin'", "mlx[cpu]>=0.20; sys_platform == 'linux'"]
+
+[project.scripts]
+defectlab = "defect_inspection.app:main"
+
+[tool.setuptools.packages.find]
+include = ["defect_inspection*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Slow tests (real training/export) run only on request: pytest -m slow
+addopts = "-m 'not slow'"
+markers = ["slow: real model training/export, minutes on CPU"]

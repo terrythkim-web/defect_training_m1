@@ -1,0 +1,29 @@
+DefectLab — Mac(M1 이후) 테스트 순서
+=====================================
+
+0. 준비: macOS 13 이상, Python 3.12 (brew install python@3.12), 전원 연결
+
+1. 설치 (이 폴더에서)
+   python3.12 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install --upgrade pip
+   pip install torch torchvision
+   pip install -e ".[dev,bench,package]"
+
+2. 설치 확인
+   python -m defect_inspection.app --self-check   -> 9개 모두 [OK]
+   python -m pytest                               -> 실패가 있으면 이름과 메시지 기록
+
+3. 앱 실행과 수동 확인
+   python -m defect_inspection.app
+   체크리스트: docs/mac_checklist.md (1~7장)
+
+4. 가속 측정 (MLX 진행 여부 결정용, 10~20분, 다른 앱 닫기)
+   python tools/bench_apple.py --json bench.json
+   -> 표 3개 + 마지막 "판단" 줄, 그리고 bench.json 공유
+
+5. 설치본 (.app / .dmg) 빌드
+   bash packaging/build_mac.sh
+   -> dist/DefectLab.app, dist/DefectLab-macos-arm64.dmg (체크리스트 8장)
+
+공유할 것: self-check 출력, pytest 결과, 체크리스트 메모, bench.json

@@ -1,0 +1,58 @@
+name: Package
+
+# Manual: Actions → Package → Run workflow. Builds the PyInstaller distribution on Linux, Windows
+# and macOS (.app + .dmg), runs its self-check and uploads the archives (PRD 5.1/5.2, PROMPTS steps 20, 22).
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Qt runtime libraries and Korean font (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 fonts-noto-cjk
+
+      - name: Install CPU PyTorch and the package (Linux, Windows)
+        if: runner.os != 'macOS'
+        run: |
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[package]"
+
+      - name: Install PyTorch (with MPS) and the package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python -m pip install torch torchvision
+          python -m pip install -e ".[package]"
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: packaging/build_linux.sh python
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 -Python python
+
+      - name: Build (macOS .app + .dmg, ad-hoc signed)
+        if: runner.os == 'macOS'
+        run: packaging/build_mac.sh python
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DefectLab-${{ runner.os }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.dmg
