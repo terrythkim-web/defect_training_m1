@@ -35,6 +35,7 @@ from defect_inspection.core.sam_assist import DEFAULT_SAM_MODEL, SAM_MODEL_CHOIC
 from defect_inspection import platform_utils
 from defect_inspection.platform_utils import OVERLAY_SCROLLBARS, cache_dir, config_dir, detect_device
 from defect_inspection.ui.canvas.image_canvas import CanvasPanel
+from defect_inspection.ui.new_project_dialog import NewProjectDialog
 from defect_inspection.core.roi import RoiStore
 from defect_inspection.ui.canvas.labeling_canvas import LabelingCanvas
 from defect_inspection.ui.canvas.roi_tool import RoiBar, RoiSession
@@ -176,10 +177,12 @@ class MainWindow(QMainWindow):
         self.act_backspace = action(self.tr("거절 / 마지막 점 삭제"), QKeySequence(Qt.Key.Key_Backspace), self.on_backspace)
         self.act_delete = action(self.tr("라벨 삭제"), QKeySequence.StandardKey.Delete, self.delete_selected)
         self.act_escape = action(self.tr("그리기 취소"), QKeySequence(Qt.Key.Key_Escape), self.on_escape)
-        for act in (self.act_enter, self.act_backspace, self.act_delete, self.act_escape):
+        # F1.5: an image without defects trains as background (empty label)
+        self.act_toggle_ok = action(self.tr("OK 이미지 (결함 없음) 표시/해제"), "O", self.toggle_ok)
+        for act in (self.act_enter, self.act_backspace, self.act_delete, self.act_escape, self.act_toggle_ok):
             self.addAction(act)
 
-        self._project_actions = [self.act_add_folder, self.act_save]
+        self._project_actions = [self.act_add_folder, self.act_save, self.act_toggle_ok]
 
     def _build_toolbar(self) -> None:
         tb = QToolBar(self.tr("도구"), self)
@@ -202,6 +205,8 @@ class MainWindow(QMainWindow):
         self.image_panel = ImageListPanel(self.thumbnails)
         self.image_panel.current_changed.connect(self._on_current_image_changed)
         self.image_list = self.image_panel.list
+        self.image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)  # right-click: OK
+        self.image_list.addAction(self.act_toggle_ok)
         self.class_list = QListWidget()
         self.class_list.setObjectName("class_list")
         self.class_list.currentRowChanged.connect(self._on_class_row_changed)
@@ -424,11 +429,11 @@ class MainWindow(QMainWindow):
     def new_project_dialog(self) -> None:
         if self._training_blocks_project_change() or not self._confirm_discard_changes():
             return
-        folder = QFileDialog.getExistingDirectory(self, self.tr("새 프로젝트 폴더 선택"))
-        if not folder:
+        dialog = NewProjectDialog(self)  # folder, name, task (detect/seg), colour mode (F1.1, F1.6)
+        if dialog.exec() != NewProjectDialog.DialogCode.Accepted:
             return
         try:
-            self.load_project(Project.create(folder))
+            self.load_project(Project.create(**dialog.values()))
         except Exception as e:  # noqa: BLE001 - shown to the user
             QMessageBox.critical(self, self.tr("새 프로젝트"), str(e))
 
@@ -722,7 +727,7 @@ class MainWindow(QMainWindow):
         for act in (self.act_new, self.act_open, self.act_add_folder, self.act_save):
             file_menu.addAction(act)
         edit_menu = bar.addMenu(self.tr("편집"))
-        for act in (self.act_undo, self.act_redo, self.act_delete):
+        for act in (self.act_undo, self.act_redo, self.act_delete, self.act_toggle_ok):
             edit_menu.addAction(act)
         view_menu = bar.addMenu(self.tr("보기"))
         for act in (self.act_fit, self.act_zoom_100, self.act_prev_image, self.act_next_image):
@@ -957,8 +962,36 @@ class MainWindow(QMainWindow):
             return
         ann = self.session.annotations
         entry = self.project.image(self.session.image_path)
+        if entry.is_ok and ann.confirmed():  # drawing a defect on an OK image: it is not OK any more
+            self.project.set_ok(entry.path, False)
+            self.mark_dirty()
+            self.statusBar().showMessage(self.tr("라벨을 그려 OK 이미지 표시를 해제했습니다"), 4000)
         self.image_panel.set_status(
             self.session.image_path, LabelStatus(len(ann.confirmed()), len(ann.suggestions()), entry.is_ok))
+        self._update_status()
+
+    def toggle_ok(self) -> None:
+        """Mark the current image as OK (no defect) or clear the mark (F1.5). Refused while the
+        image has confirmed labels: an OK image trains as background with an empty label."""
+        if self.project is None or self.current_image is None:
+            return
+        path = self.current_image
+        entry = self.project.image(path)
+        if not entry.is_ok:
+            confirmed = (len(self.session.annotations.confirmed()) if self.session is not None
+                         and self.session.image_path == path else self.project.label_status(entry).confirmed)
+            if confirmed:
+                self.statusBar().showMessage(
+                    self.tr("라벨이 있는 이미지는 OK로 표시할 수 없습니다. 라벨을 지운 뒤 다시 하세요"), 5000)
+                return
+        self.project.set_ok(path, not entry.is_ok)
+        self.mark_dirty()
+        if self.session is not None and self.session.image_path == path:
+            self._on_session_changed()
+        else:
+            self.image_panel.refresh_status(path)
+        self.statusBar().showMessage(
+            self.tr("OK 이미지로 표시했습니다 (배경으로 학습)") if entry.is_ok else self.tr("OK 표시를 해제했습니다"), 3000)
         self._update_status()
 
     def _on_current_image_changed(self, path: str | None) -> None:

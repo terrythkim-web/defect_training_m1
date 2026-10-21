@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import warnings
 from pathlib import Path
 
@@ -114,12 +115,23 @@ def use_persistent_matplotlib_cache() -> None:
 # Everything that runs a model asks resolve_device() instead of leaving the device empty.
 
 _accelerator_cache: list[str | None] = []
+_accelerator_lock = threading.Lock()
 
 
 def torch_accelerator() -> str | None:
-    """"cuda", "mps" or None. Imports torch (~1 s) once; call it off the UI thread."""
+    """"cuda", "mps" or None. Imports torch (~1 s) once; call it off the UI thread.
+
+    Locked: the device-detection thread, SAM loading and a comparison can all ask at start-up,
+    and two threads running the first MPS op of the process at once aborted it in Metal."""
     if _accelerator_cache:
         return _accelerator_cache[0]
+    with _accelerator_lock:
+        if not _accelerator_cache:
+            _accelerator_cache.append(_probe_accelerator())
+    return _accelerator_cache[0]
+
+
+def _probe_accelerator() -> str | None:
     found = None
     try:
         import torch
@@ -132,7 +144,6 @@ def torch_accelerator() -> str | None:
                 found = "mps"
     except ImportError:
         pass
-    _accelerator_cache.append(found)
     return found
 
 

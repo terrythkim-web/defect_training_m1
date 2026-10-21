@@ -196,3 +196,28 @@ def test_predictor_and_sam_use_resolved_device(accelerator, monkeypatch):
     assert E.Predictor("x.pt", "detect", 64).device == "mps"
     assert E.Predictor("x.pt", "detect", 64, device="cpu").device == "cpu"
     assert SamAssistant().requested_device is None  # resolved to mps on load()
+
+
+def test_accelerator_probe_runs_once_across_threads(monkeypatch):
+    # several threads asked at start-up and ran the first MPS op at once: Metal aborted the process
+    import threading
+    import time
+
+    from defect_inspection import platform_utils as pu
+
+    calls = []
+
+    def slow_probe():
+        calls.append(1)
+        time.sleep(0.05)
+        return "mps"
+
+    monkeypatch.setattr(pu, "_accelerator_cache", [])
+    monkeypatch.setattr(pu, "_probe_accelerator", slow_probe)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(pu.torch_accelerator())) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert calls == [1] and results == ["mps"] * 8
