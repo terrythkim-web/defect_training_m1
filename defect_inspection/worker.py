@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import traceback
+import warnings
 from pathlib import Path
 
 from defect_inspection.core.trainer import (
@@ -138,10 +139,18 @@ def run_ultralytics(spec, emit: Emitter, stop: threading.Event, run_dir: Path, r
     model.add_callback("on_train_batch_end", on_train_batch_end)
     model.add_callback("on_train_epoch_end", on_train_epoch_end)
     model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+    # Training runs with torch.use_deterministic_algorithms(True, warn_only=True) (Ultralytics
+    # deterministic=True). MPS lacks deterministic versions of a few backward ops and warns about
+    # each one; harmless (results may differ in the last digits between runs) but alarming in the log.
+    warnings.filterwarnings("ignore", message=r".*does not have a deterministic implementation.*")
     if resume:
         model.train(resume=True)
     else:
-        model.train(**train_args(spec, run_dir))
+        args = train_args(spec, run_dir)
+        if spec.train.batch <= 0 and args["batch"] > 0:
+            print(f"자동 batch: {args['batch']} (장치 {args['device']}, 메모리 기준 추정. "
+                  "느리거나 스왑이 많으면 batch를 직접 낮추세요)", flush=True)
+        model.train(**args)
 
 
 def main(argv: list[str] | None = None) -> int:

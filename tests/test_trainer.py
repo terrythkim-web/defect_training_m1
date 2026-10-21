@@ -316,3 +316,28 @@ def test_frozen_worker_exe_preferred(monkeypatch, tmp_path):
     worker.write_bytes(b"")
     prog, args = worker_command(tmp_path, resume=True)
     assert prog == str(worker) and args[:2] == ["--run-dir", str(tmp_path)] and "--resume" in args
+
+
+def test_auto_batch_fits_memory():
+    gb = 2**30
+    # 8 GB M1 at 640: yolo11s at Ultralytics' fallback 16 swapped for minutes per epoch
+    assert T.auto_batch("yolo11n", 640, "mps", 8 * gb) == 8
+    assert T.auto_batch("yolo11s", 640, "mps", 8 * gb) == 4
+    assert T.auto_batch("yolo11m", 640, "mps", 8 * gb) == 2
+    assert T.auto_batch("att-yolo-s", 1280, "mps", 8 * gb) == 1
+    assert T.auto_batch("yolo11s", 640, "mps", 16 * gb) == 8
+    assert T.auto_batch("yolo11n", 320, "cpu", 64 * gb) == 16  # never above Ultralytics' default
+    assert T.auto_batch("yolo11s", 640, "cpu", None) == 16  # memory unknown: unchanged behaviour
+    assert T.auto_batch("yolo11s", 640, "0", 8 * gb) == -1  # CUDA: Ultralytics AutoBatch
+
+
+def test_train_args_auto_batch(monkeypatch, tmp_path):
+    monkeypatch.setattr(T, "total_memory_bytes", lambda: 8 * 2**30)
+    spec = T.RunSpec(run_id="r", project_root=".", task="detect", nc=1, names=["dent"], channels=3,
+                     data_yaml="d.yaml", weights_dir=".", created="now",
+                     train=T.TrainConfig(model="yolo11s", device="cpu", batch=0))
+    assert T.train_args(spec, tmp_path)["batch"] == 4  # 0 (typed in the spin box) counts as auto
+    assert T.train_args(spec.model_copy(update={"train": T.TrainConfig(device="cpu", batch=-1)}),
+                        tmp_path)["batch"] == 4
+    assert T.train_args(spec.model_copy(update={"train": T.TrainConfig(device="cpu", batch=12)}),
+                        tmp_path)["batch"] == 12

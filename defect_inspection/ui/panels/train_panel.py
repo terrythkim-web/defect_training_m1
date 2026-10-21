@@ -108,6 +108,10 @@ class TrainPanel(QWidget):
         self.batch = QSpinBox()
         self.batch.setRange(-1, 1024)
         self.batch.setSpecialValueText(self.tr("자동"))
+        self.batch.setToolTip(self.tr(
+            "자동(또는 0): CUDA GPU는 GPU 메모리를 재서 정하고, Apple GPU·CPU는 컴퓨터 메모리와 "
+            "모델·imgsz로 추정합니다 (8 GB Mac, 640px: yolo11n 8, yolo11s 4). "
+            "학습이 매우 느리거나 스왑이 많으면 직접 낮추세요."))
         self.lr0 = QDoubleSpinBox()
         self.lr0.setRange(0.0, 1.0)
         self.lr0.setDecimals(5)

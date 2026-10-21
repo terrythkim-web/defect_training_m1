@@ -269,6 +269,14 @@ def path_too_long(path: str | Path) -> bool:
     return len(str(Path(path).absolute())) >= MAX_PATH
 
 
+def total_memory_bytes() -> int | None:
+    """Physical memory (on Apple Silicon also the GPU's, it is unified), or None if unknown."""
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):  # Windows has no sysconf
+        return None
+
+
 def default_dataloader_workers() -> int:
     """DataLoader worker processes for training. Windows spawns each worker as a fresh process
     (slow start, high memory), so keep it low there (PRD 5.1). macOS also spawns, and training

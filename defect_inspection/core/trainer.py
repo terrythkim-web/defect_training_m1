@@ -28,7 +28,12 @@ from pydantic import BaseModel, Field
 from defect_inspection.core.crop_config import TilingParams
 from defect_inspection.core.model_zoo import DEFAULT_MODEL, PAPER_HYP, get_choice
 from defect_inspection.core.project import Project
-from defect_inspection.platform_utils import atomic_write_text, default_dataloader_workers, resolve_device
+from defect_inspection.platform_utils import (
+    atomic_write_text,
+    default_dataloader_workers,
+    resolve_device,
+    total_memory_bytes,
+)
 
 EVENT_PREFIX = "@@DL "
 LOG_FILE = "train.log"
@@ -47,7 +52,7 @@ class TrainConfig(BaseModel):
     dataset: Literal["full", "crop"] = "full"
     epochs: int = Field(default=100, ge=1, le=5000)
     imgsz: int = Field(default=640, ge=32, le=4096)
-    batch: int = Field(default=-1, ge=-1, le=1024)  # -1 = Ultralytics AutoBatch (CUDA), else fixed
+    batch: int = Field(default=-1, ge=-1, le=1024)  # -1 or 0 = auto (auto_batch), else fixed
     lr0: float | None = Field(default=None, gt=0, le=1)  # None = Ultralytics default
     patience: int = Field(default=50, ge=0)  # early stopping, 0 = off
     device: str = "auto"  # "auto" (CUDA GPU, Apple MPS or CPU), "cpu", "0", "0,1", "mps"
@@ -89,6 +94,31 @@ class RunSpec(BaseModel):
         return self.crop or TilingParams.from_window(self.train.imgsz, None)  # runs from before step 18
 
 
+# Batch that trained without swapping on an 8 GB M1 at imgsz 640 (yolo11s at 16 thrashed the swap
+# for minutes per epoch; 8 once took 680 s for the first epoch). Scaled by memory and imgsz².
+_BATCH_8GB_640 = {"n": 8, "s": 4, "m": 2}
+AUTO_BATCH_MAX = 16  # Ultralytics' own default when AutoBatch cannot measure the device
+
+
+def auto_batch(model: str, imgsz: int, device: str, memory_bytes: int | None) -> int:
+    """Batch for "자동". CUDA: -1, Ultralytics AutoBatch measures the GPU. Apple MPS / CPU:
+    AutoBatch cannot measure them and falls back to 16, which overflows an 8 GB Mac, so estimate
+    from total memory instead (never above 16, never below 1)."""
+    if device not in ("mps", "cpu"):
+        return -1
+    if memory_bytes is None:
+        return AUTO_BATCH_MAX
+    choice = get_choice(model)
+    base = _BATCH_8GB_640.get(choice.scale, 2)
+    if choice.family != "yolo11":
+        base = max(1, base // 2)  # ATT-YOLO: six heads incl. P2, about twice the activations
+    estimate = base * (memory_bytes / 2**33) * (640 / imgsz) ** 2
+    batch = 1
+    while batch * 2 <= min(estimate, AUTO_BATCH_MAX):
+        batch *= 2
+    return batch
+
+
 def train_args(spec: RunSpec, run_dir: Path) -> dict[str, Any]:
     """Keyword arguments for Ultralytics `YOLO.train()`."""
     cfg = spec.train
@@ -96,7 +126,6 @@ def train_args(spec: RunSpec, run_dir: Path) -> dict[str, Any]:
         "data": spec.data_yaml,
         "epochs": cfg.epochs,
         "imgsz": cfg.imgsz,
-        "batch": cfg.batch,
         "patience": cfg.patience,
         "workers": cfg.workers,
         "seed": cfg.seed,
@@ -109,6 +138,8 @@ def train_args(spec: RunSpec, run_dir: Path) -> dict[str, Any]:
     }
     # Always explicit: Ultralytics never chooses MPS by itself (PRD 5.2). Resolved in the worker.
     args["device"] = resolve_device(cfg.device, "train")
+    args["batch"] = cfg.batch if cfg.batch > 0 else auto_batch(cfg.model, cfg.imgsz, args["device"],
+                                                               total_memory_bytes())
     if cfg.paper_hyp:
         args.update(PAPER_HYP)
     if cfg.lr0 is not None:
