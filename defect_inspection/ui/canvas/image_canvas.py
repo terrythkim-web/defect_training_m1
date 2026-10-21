@@ -274,5 +274,7 @@ def _slider() -> QSlider:
     s = QSlider(Qt.Orientation.Horizontal)
     s.setRange(-100, 100)
     s.setValue(0)
-    s.setFixedWidth(110)
+    # shrinks with the canvas (a fixed 110 px pair made the window too wide for 1366 px screens)
+    s.setMinimumWidth(50)
+    s.setMaximumWidth(110)
     return s

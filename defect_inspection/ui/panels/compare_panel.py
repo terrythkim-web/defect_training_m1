@@ -138,12 +138,17 @@ class ComparePanel(QWidget):
             opts.addWidget(QLabel(text))
             opts.addWidget(w)
         opts.addStretch(1)
-        opts.addWidget(self.btn_compare)
-        opts.addWidget(self.btn_cancel)
+        actions = QHBoxLayout()  # own row: one row with the options was the widest part of the tab
+        actions.addStretch(1)
+        actions.addWidget(self.btn_compare)
+        actions.addWidget(self.btn_cancel)
         pick = QVBoxLayout()
-        pick.addWidget(QLabel(self.tr("비교할 run (2개 이상 체크) — 모두 같은 원본 Val 이미지, 같은 conf/IoU로 다시 평가")))
+        pick_note = QLabel(self.tr("비교할 run (2개 이상 체크) — 모두 같은 원본 Val 이미지, 같은 conf/IoU로 다시 평가"))
+        pick_note.setWordWrap(True)  # unwrapped, this sentence set the Compare tab's minimum width
+        pick.addWidget(pick_note)
         pick.addWidget(self.run_list)
         pick.addLayout(opts)
+        pick.addLayout(actions)
         pick.addWidget(self.progress)
         pick_box = QGroupBox(self.tr("run 비교"))
         pick_box.setLayout(pick)
@@ -187,7 +192,7 @@ class ComparePanel(QWidget):
         self.view_a, self.view_b = QLabel(), QLabel()
         self.caption_a, self.caption_b = QLabel(), QLabel()
         for v in (self.view_a, self.view_b):
-            v.setMinimumSize(200, 200)
+            v.setMinimumSize(140, 140)  # 2 × 200 px + the list made the tab too wide for 1366 px screens
             v.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         for c in (self.caption_a, self.caption_b):
             c.setWordWrap(True)
@@ -212,7 +217,9 @@ class ComparePanel(QWidget):
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 0, 0, 0)
         sl.addLayout(heads)
-        sl.addWidget(QLabel(self.tr("차이가 큰 이미지부터 (파랑 = 정답, 주황 = 예측). 더블클릭하면 캔버스에서 엽니다")))
+        diff_note = QLabel(self.tr("차이가 큰 이미지부터 (파랑 = 정답, 주황 = 예측). 더블클릭하면 캔버스에서 엽니다"))
+        diff_note.setWordWrap(True)
+        sl.addWidget(diff_note)
         sl.addWidget(split, 1)
 
         self.result_tabs = QTabWidget()

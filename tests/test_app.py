@@ -180,10 +180,13 @@ def test_menus_show_every_shortcut(window):
 def test_window_fits_a_13_inch_mac_screen(window, qapp):
     # the Augment tab alone wanted ~810 px; the window's minimum height was 893 > 870 px usable
     assert window.minimumSizeHint().height() < 700
-    from defect_inspection.platform_utils import IS_MAC
-
-    if IS_MAC:  # widths depend on the platform style; this is the 1440 px MacBook screen
-        assert window.minimumSizeHint().width() < 1440
+    # 1366 px laptop screens; Windows' native style needed 1674 px before (fixed sliders, unwrapped
+    # Compare-tab text, uncapped tab width). The parts are in the message for CI logs.
+    parts = {"left": window.left_splitter.minimumSizeHint().width(),
+             "canvas": window.canvas_panel.minimumSizeHint().width(),
+             "tabs": window.tabs.minimumSizeHint().width(),
+             **{n: p.minimumSizeHint().width() for n, p in window.panels.items()}}
+    assert window.minimumSizeHint().width() < 1366, parts
     window.tabs.setCurrentWidget(window.augment_panel)
     assert window.tabs.currentWidget() is window.augment_panel
     assert window.tabs.indexOf(window.export_panel) == 4 and window.tabs.widget(4) is window.export_panel
@@ -218,3 +221,24 @@ def test_tag_is_measured_with_the_painted_font(qapp):
     painted = painter.boundingRect(QRectF(0, 0, 400, 40), Qt.AlignmentFlag.AlignVCenter, tag.text).width()
     painter.end()
     assert abs(tag.boundingRect().width() - 8 - painted) < 1.5
+
+
+def test_tabs_scroll_sideways_where_scrollbars_are_visible(qapp, monkeypatch, tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+
+    from defect_inspection.ui import main_window as mw
+
+    wide = QLabel("x" * 400)  # a panel much wider than the cap
+    monkeypatch.setattr(mw, "OVERLAY_SCROLLBARS", False)  # Windows / Linux
+    tabs = mw.ScrollTabs()
+    tabs.addTab(wide, "W")
+    area = tabs._areas[wide]
+    assert area.minimumWidth() <= mw.SCROLL_TAB_MAX_MIN_WIDTH
+    assert area.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    monkeypatch.setattr(mw, "OVERLAY_SCROLLBARS", True)  # macOS: never clipped sideways
+    tabs2 = mw.ScrollTabs()
+    wide2 = QLabel("x" * 400)
+    tabs2.addTab(wide2, "W")
+    assert tabs2._areas[wide2].minimumWidth() >= wide2.minimumSizeHint().width()
+    assert tabs2._areas[wide2].horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff

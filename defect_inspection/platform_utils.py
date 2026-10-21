@@ -18,6 +18,8 @@ IS_MAC = sys.platform == "darwin"
 # Mac keyboards have no Delete key (only ⌫ = Backspace; forward delete is fn+⌫), so there ⌫ also
 # deletes the selected label/ROI when there is no suggestion to reject (PRD 5.2).
 BACKSPACE_DELETES_SELECTION = IS_MAC
+# macOS hides scrollbars until you scroll, so a panel clipped sideways there just looks cut off.
+OVERLAY_SCROLLBARS = IS_MAC
 # CoreML (.mlpackage) export and its verification need macOS (coremltools' converter and runtime).
 COREML_EXPORT_AVAILABLE = IS_MAC
 

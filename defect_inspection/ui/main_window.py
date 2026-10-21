@@ -33,7 +33,7 @@ from defect_inspection.core.image_cache import ImageCache
 from defect_inspection.core.project import LabelStatus, Project
 from defect_inspection.core.sam_assist import DEFAULT_SAM_MODEL, SAM_MODEL_CHOICES, SamPrompt, mask_to_shape
 from defect_inspection import platform_utils
-from defect_inspection.platform_utils import cache_dir, config_dir, detect_device
+from defect_inspection.platform_utils import OVERLAY_SCROLLBARS, cache_dir, config_dir, detect_device
 from defect_inspection.ui.canvas.image_canvas import CanvasPanel
 from defect_inspection.core.roi import RoiStore
 from defect_inspection.ui.canvas.labeling_canvas import LabelingCanvas
@@ -1039,6 +1039,9 @@ class MainWindow(QMainWindow):
         threading.Thread(target=run, daemon=True).start()
 
 
+SCROLL_TAB_MAX_MIN_WIDTH = 420  # px, Windows/Linux (see ScrollTabs)
+
+
 class ScrollTabs(QTabWidget):
     """Tab widget whose pages scroll. Without it the tallest panel (Augment, ~810 px) set the
     window's minimum height to 893 px, more than a 13" MacBook's 870 px usable height, so the
@@ -1053,10 +1056,16 @@ class ScrollTabs(QTabWidget):
         area = QScrollArea()
         area.setWidgetResizable(True)
         area.setFrameShape(QScrollArea.Shape.NoFrame)
-        # Scroll vertically only: the widths fit a 1440 px screen, and a sideways-clipped panel
-        # looks broken on macOS, where scrollbars are hidden until you scroll.
-        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        area.setMinimumWidth(page.minimumSizeHint().width() + area.verticalScrollBar().sizeHint().width())
+        needed = page.minimumSizeHint().width() + area.verticalScrollBar().sizeHint().width()
+        if OVERLAY_SCROLLBARS:
+            # macOS: vertical scrolling only. Scrollbars stay hidden until you scroll, so a panel
+            # clipped sideways looks broken; the widths fit a 1440 px MacBook screen anyway.
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            area.setMinimumWidth(needed)
+        else:
+            # Windows/Linux: the native styles are wider (the window needed 1674 px on Windows);
+            # cap the tab width and let a wider panel scroll sideways with a visible scrollbar.
+            area.setMinimumWidth(min(needed, SCROLL_TAB_MAX_MIN_WIDTH))
         area.setWidget(page)
         self._areas[page] = area
         return super().addTab(area, label)
