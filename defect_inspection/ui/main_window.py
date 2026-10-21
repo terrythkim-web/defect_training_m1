@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QFileSystemWatcher, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QIcon, QKeySequence, QPixmap, QUndoStack
 from PySide6.QtWidgets import (
     QColorDialog,
@@ -64,6 +64,8 @@ _SETTINGS_SAM_MODEL = "sam/model"
 _SETTINGS_AUTOSAVE = "autosave/interval_sec"
 _SETTINGS_EXPORT_PATTERN = "export/name_pattern"
 DEFAULT_AUTOSAVE_SEC = 30
+IMAGES_SYNC_DELAY_MS = 700
+IMAGES_SETTLE_SEC = 1.0  # a file changed more recently may still be copying
 
 
 class MainWindow(QMainWindow):
@@ -95,6 +97,14 @@ class MainWindow(QMainWindow):
         self._sam_generation = 0
         self.autosave_timer = QTimer(self)
         self.autosave_timer.timeout.connect(self.autosave)
+        # images/ watched for files copied in or deleted outside the app (Finder/Explorer).
+        # Events come in bursts during a copy, so they are collected for a moment first.
+        self.images_watcher = QFileSystemWatcher(self)
+        self.images_watcher.directoryChanged.connect(lambda _path: self.images_sync_timer.start())
+        self.images_sync_timer = QTimer(self)
+        self.images_sync_timer.setSingleShot(True)
+        self.images_sync_timer.setInterval(IMAGES_SYNC_DELAY_MS)
+        self.images_sync_timer.timeout.connect(self.sync_images_folder)
 
         self.resize(1600, 900)
         self._build_actions()
@@ -400,9 +410,60 @@ class MainWindow(QMainWindow):
         self.export_panel.set_project(project)
         self.compare_panel.set_project(project)
         self._exp_stage = None
+        self._watch_images_dir()
+        changes = self._sync_images_registry() if project is not None else None
         self._refresh_lists()
+        if changes is not None and changes.changed:
+            self.mark_dirty()
+            self._show_sync_message(changes)
         self._update_title()
         self.project_changed.emit(project)
+
+    # ---- images/ folder sync ---------------------------------------------------------------
+    def _watch_images_dir(self) -> None:
+        if self.images_watcher.directories():
+            self.images_watcher.removePaths(self.images_watcher.directories())
+        self.images_sync_timer.stop()
+        if self.project is not None:
+            self.project.images_dir.mkdir(parents=True, exist_ok=True)
+            self.images_watcher.addPath(str(self.project.images_dir))
+
+    def _sync_images_registry(self):
+        changes = self.project.sync_images_dir(IMAGES_SETTLE_SEC)
+        if changes.pending:  # copies still running: look again shortly
+            self.images_sync_timer.start()
+        return changes
+
+    def sync_images_folder(self) -> bool:
+        """Pick up images added to or deleted from the project's images/ folder outside the app.
+        Returns True if the image list changed."""
+        if self.project is None:
+            return False
+        if self.augment_panel.is_building or self.compare_panel.busy or self.result_panel.busy:
+            self.images_sync_timer.start()  # those threads read the image list: wait for them
+            return False
+        if self.current_image is not None and not self.project.image_abspath(self.current_image).is_file():
+            self._close_session(save=False)  # its image is gone; saving would recreate its labels
+        changes = self._sync_images_registry()
+        if not changes.changed:
+            return False
+        if changes.removed:
+            self.image_cache.invalidate()
+        self.image_panel.apply_sync([e.path for e in changes.added], changes.removed)
+        self.mark_dirty()
+        self._update_status()
+        self._show_sync_message(changes)
+        return True
+
+    def _show_sync_message(self, changes) -> None:
+        parts = []
+        if changes.added:
+            parts.append(self.tr("추가 {0}장").format(len(changes.added)))
+        if changes.removed:
+            parts.append(self.tr("삭제 {0}장").format(len(changes.removed)))
+        if changes.renamed:
+            parts.append(self.tr("이름 변경 {0}").format(", ".join(f"{a} → {b}" for a, b in changes.renamed)))
+        self.statusBar().showMessage(self.tr("이미지 폴더 변경 반영: {0}").format(" · ".join(parts)), 8000)
 
     def mark_dirty(self) -> None:
         self.project_dirty = True
@@ -943,9 +1004,10 @@ class MainWindow(QMainWindow):
         if self.session is not None and self.session.save():
             self.image_panel.refresh_status(self.session.image_path)
 
-    def _close_session(self) -> None:
+    def _close_session(self, save: bool = True) -> None:
         """Save the current image's labels and start a fresh undo history for the next one."""
-        self._save_session()
+        if save:
+            self._save_session()
         if self.roi_session is not None:
             self.canvas.set_roi_session(None)
             self.roi_session.deleteLater()

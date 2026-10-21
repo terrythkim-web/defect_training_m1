@@ -6,8 +6,9 @@ import hashlib
 import os
 import re
 import shutil
+import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Literal
 
@@ -146,6 +147,23 @@ class GrayscaleConversion:
     failed: list[str]
     bytes_before: int
     bytes_after: int
+
+
+@dataclass
+class ImageSync:
+    """Result of Project.sync_images_dir: what changed in images/ outside the app."""
+
+    added: list[ImageEntry] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    renamed: list[tuple[str, str]] = field(default_factory=list)  # (found as, registered as)
+    pending: list[str] = field(default_factory=list)  # still being written / unreadable: retry later
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed)
+
+
+REMOVED_LABELS_DIR = "removed"  # labels/removed/: labels of images deleted from images/
 
 
 def compute_split(images: Iterable[ImageEntry], split: SplitConfig) -> dict[str, Split]:
@@ -319,6 +337,92 @@ class Project:
             self.config.images.append(entry)
             added.append(entry)
         return added
+
+    def sync_images_dir(self, settle_sec: float = 1.0, now: float | None = None) -> ImageSync:
+        """Match the image registry to what is actually in images/ (files copied in or deleted
+        with Finder/Explorer while the project is open or closed).
+
+        New supported files are registered like add_images (unique stems, renamed on disk if
+        needed; converted to single channel in grayscale mode). Files changed less than
+        `settle_sec` ago, or that cannot be decoded yet, are reported as pending — a copy may
+        still be running. Entries whose file is gone are removed and their labels moved to
+        labels/removed/, from where they come back if the same file name reappears.
+        """
+        now = time.time() if now is None else now
+        result = ImageSync()
+        removed_dir = self.labels_dir / REMOVED_LABELS_DIR
+        for entry in list(self.config.images):
+            if not self.image_abspath(entry).is_file():
+                self.config.images.remove(entry)
+                for label in (self.label_json_path(entry), self.label_txt_path(entry)):
+                    if label.is_file():
+                        removed_dir.mkdir(parents=True, exist_ok=True)
+                        os.replace(label, removed_dir / label.name)
+                result.removed.append(entry.path)
+        if not self.images_dir.is_dir():
+            return result
+
+        registered = {e.path for e in self.config.images}
+        for src in sorted(self.images_dir.iterdir()):
+            if (src.name in registered or src.name.startswith((".", "~$")) or not src.is_file()
+                    or not is_supported_image(src)):
+                continue
+            try:
+                if now - src.stat().st_mtime < settle_sec:
+                    result.pending.append(src.name)
+                    continue
+            except OSError:
+                continue
+            if self.config.color_mode == "grayscale":
+                image = imread_unicode(src)
+                if image is None:
+                    result.pending.append(src.name)
+                    continue
+                if not is_grayscale(image) and not _write_image(src, to_grayscale(image)):
+                    result.pending.append(src.name)
+                    continue
+            dest = src
+            stem = src.stem.lower()
+            if any(PurePosixPath(e.path).stem.lower() == stem for e in self.config.images) \
+                    or not self._labels_free_for(src.name):
+                dest = self._unique_dest(src.name)
+                try:
+                    os.replace(src, dest)
+                except OSError:  # Windows: still locked by the copying program
+                    result.pending.append(src.name)
+                    continue
+                result.renamed.append((src.name, dest.name))
+            entry = ImageEntry(path=dest.name)
+            self.config.images.append(entry)
+            registered.add(dest.name)
+            self._restore_removed_labels(entry)
+            result.added.append(entry)
+        return result
+
+    def _labels_free_for(self, rel: str) -> bool:
+        """False if labels/<stem>.json exists for a different image (would be attached wrongly)."""
+        path = self.label_json_path(rel)
+        if not path.is_file():
+            return True
+        try:
+            return load_annotations(path).image == rel
+        except (OSError, ValueError):
+            return False
+
+    def _restore_removed_labels(self, entry: ImageEntry) -> None:
+        removed_dir = self.labels_dir / REMOVED_LABELS_DIR
+        json_path = removed_dir / self.label_json_path(entry).name
+        if self.has_labels(entry) or not json_path.is_file():
+            return
+        try:
+            if load_annotations(json_path).image != entry.path:
+                return
+        except (OSError, ValueError):
+            return
+        os.replace(json_path, self.label_json_path(entry))
+        ann = load_annotations(self.label_json_path(entry))
+        write_yolo_txt(self.label_txt_path(entry), ann, self.config.task)  # task may have changed
+        (removed_dir / self.label_txt_path(entry).name).unlink(missing_ok=True)
 
     def _unique_dest(self, filename: str) -> Path:
         # Case-insensitive: Windows file systems treat A.png and a.png as the same file.

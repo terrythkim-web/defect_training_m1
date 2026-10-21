@@ -92,6 +92,28 @@ class ImageListPanel(QWidget):
         if self.list.currentItem() is None:
             self.current_changed.emit(None)
 
+    def apply_sync(self, added: list[str], removed: list[str]) -> None:
+        """Add/remove items for images that appeared in or vanished from images/, keeping the
+        current item (and the open labeling session) unless that image was removed."""
+        if self.project is None:
+            return
+        for path in removed:
+            item = self._item(path)
+            if item is not None:
+                self._items_by_abspath.pop(str(self.project.image_abspath(path)), None)
+                self.list.takeItem(self.list.row(item))  # moves the current item if it was this one
+        for path in added:
+            item = QListWidgetItem(self._placeholder_icon, "")
+            item.setData(PATH_ROLE, path)
+            self.list.addItem(item)
+            self._set_status(item, self.project.label_status(path))
+            abspath = str(self.project.image_abspath(path))
+            self._items_by_abspath[abspath] = item
+            self.thumbnails.request(abspath)
+        self.apply_filter()
+        if self.list.currentItem() is None:
+            self.current_changed.emit(None)
+
     def refresh_status(self, path: str) -> None:
         """Re-read the label status of one image, e.g. after its labels were saved."""
         if self.project is None:
