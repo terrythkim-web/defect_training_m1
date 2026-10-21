@@ -36,8 +36,11 @@ from defect_inspection.core.trainer import (
     RunInfo,
     TrainConfig,
     list_runs,
+    log_header,
+    open_run_log,
     prepare_run,
     read_events,
+    read_run_log,
 )
 from defect_inspection.platform_utils import default_dataloader_workers, gpu_device_choice
 from defect_inspection.ui.train_process import TrainProcess
@@ -75,6 +78,7 @@ class TrainPanel(QWidget):
         self.process.log.connect(self._log)
         self.process.finished.connect(self._on_finished)
         self.active_run: Path | None = None
+        self._log_file = None  # active run's train.log (every line shown in the log tab is saved)
         self.gpu_available = False
         # Main window hook: save pending edits and refuse while a dataset build runs.
         self.before_start: Callable[[], bool] = lambda: True
@@ -216,6 +220,7 @@ class TrainPanel(QWidget):
         self._update_buttons()
         if not self.running:
             self.charts.clear()
+            self.log_view.clear()
 
     def set_detected_device(self, text: str) -> None:
         self.gpu_available = text.startswith("GPU")
@@ -306,7 +311,14 @@ class TrainPanel(QWidget):
         self.active_run = run
         if not resume:
             self.charts.clear()
-            self.log_view.clear()
+        # A new run starts with an empty log; a resume shows the run's earlier attempts first.
+        self.log_view.setPlainText("" if not resume else (read_run_log(run) or "").rstrip("\n"))
+        self._close_log_file()
+        try:
+            self._log_file = open_run_log(run)
+        except OSError as e:
+            self.log_view.appendPlainText(self.tr("로그 파일을 열 수 없습니다: {0}").format(e))
+        self._log(log_header(resume))
         self.progress.setValue(0)
         self._log(self.tr("{0}: {1}").format(self.tr("재개") if resume else self.tr("시작"), run.name))
         self.process.start(run, resume=resume)
@@ -329,6 +341,20 @@ class TrainPanel(QWidget):
     # ---- events --------------------------------------------------------------------------
     def _log(self, text: str) -> None:
         self.log_view.appendPlainText(text)
+        if self._log_file is not None:
+            try:
+                self._log_file.write(text + "\n")
+                self._log_file.flush()  # a crash of the app must not lose the log
+            except OSError:
+                self._close_log_file()
+
+    def _close_log_file(self) -> None:
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+            self._log_file = None
 
     def _on_event(self, e: dict) -> None:
         kind = e.get("type")
@@ -377,6 +403,7 @@ class TrainPanel(QWidget):
     def _on_finished(self, state: str) -> None:
         run = self.active_run
         self.status_label.setText(self.tr("학습 {0}").format(self.tr(STATE_LABELS.get(state, state))))
+        self._close_log_file()
         self.active_run = None
         self.refresh_history()
         self._update_buttons()
@@ -417,4 +444,6 @@ class TrainPanel(QWidget):
         run = self.selected_run()
         if run is not None and not self.running:
             self.charts.show_series(EpochSeries.from_events(read_events(run.path)))
+            log = read_run_log(run.path)
+            self.log_view.setPlainText(log.rstrip("\n") if log is not None else self.tr("(이 학습의 저장된 로그가 없습니다)"))
         self._update_buttons()

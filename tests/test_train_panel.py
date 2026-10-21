@@ -2,6 +2,7 @@
 training mode), live charts, log and history."""
 
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -13,7 +14,7 @@ from defect_inspection.core.annotation import BBox
 from defect_inspection.core.augment_config import AugmentConfig, TransformSetting
 from defect_inspection.core.dataset import build_full_dataset
 from defect_inspection.core.project import Project
-from defect_inspection.core.trainer import EpochSeries, list_runs
+from defect_inspection.core.trainer import LOG_FILE, EpochSeries, list_runs
 from defect_inspection.platform_utils import imwrite_unicode
 from defect_inspection.ui.main_window import MainWindow
 from defect_inspection.ui.widgets.training_charts import SERIES, TrainingCharts, loss_style, metric_style
@@ -226,6 +227,55 @@ def test_stop_and_resume_from_history(panel, qapp, monkeypatch):
     assert wait_until(qapp, lambda: states == ["stopped", "finished"])
     assert panel.charts.series.epochs == list(range(1, stopped_at + 3))  # replayed + continued
     assert panel.history.item(0, 2).text() == "완료"
+
+
+def test_log_saved_per_run_and_fresh_for_each_run(panel, qapp, monkeypatch):
+    done = []
+    panel.run_finished.connect(lambda run, state: done.append(run))
+    panel.log_view.setPlainText("이전 내용")
+    assert panel.start()
+    assert wait_until(qapp, lambda: len(done) == 1)
+    first = log_text(panel)
+    assert "이전 내용" not in first and "학습 완료" in first
+    saved = (Path(done[0]) / LOG_FILE).read_text(encoding="utf-8")
+    assert saved.startswith("===== 시작 ") and "학습 완료" in saved and "epoch 3/3" in saved
+
+    assert panel.start()
+    assert wait_until(qapp, lambda: len(done) == 2)
+    assert done[0] != done[1]
+    assert log_text(panel).count("학습 완료") == 1  # the second run's log starts empty
+    assert (Path(done[0]) / LOG_FILE).read_text(encoding="utf-8") == saved  # untouched
+
+    rows = {panel._runs[i].path: i for i in range(len(panel._runs))}
+    panel.history.selectRow(rows[Path(done[0])])
+    assert log_text(panel) == saved.rstrip("\n")
+
+
+def test_resume_appends_to_the_run_log(panel, qapp, monkeypatch):
+    monkeypatch.setenv("DEFECTLAB_FAKE_TRAIN", "50:0.1")
+    states = []
+    panel.run_finished.connect(lambda run, state: states.append((run, state)))
+    panel.start()
+    assert wait_until(qapp, lambda: panel.progress.value() >= 1)
+    panel.btn_stop.click()
+    assert wait_until(qapp, lambda: len(states) == 1)
+    monkeypatch.setenv("DEFECTLAB_FAKE_TRAIN", "2:0.01")
+    panel.history.selectRow(0)
+    assert "중지됨" in log_text(panel)
+    assert panel.resume_selected()
+    assert wait_until(qapp, lambda: len(states) == 2)
+    saved = (Path(states[0][0]) / LOG_FILE).read_text(encoding="utf-8")
+    assert saved.index("===== 시작") < saved.index("중지됨") < saved.index("===== 재개")
+    assert "===== 시작" in log_text(panel) and "===== 재개" in log_text(panel)
+
+
+def test_old_run_without_log(panel, qapp):
+    panel.start()
+    assert wait_until(qapp, lambda: not panel.running and panel.history.rowCount() == 1)
+    (panel._runs[0].path / LOG_FILE).unlink()
+    panel.history.clearSelection()
+    panel.history.selectRow(0)
+    assert "저장된 로그가 없습니다" in log_text(panel)
 
 
 def test_selecting_history_replays_charts(panel, qapp):

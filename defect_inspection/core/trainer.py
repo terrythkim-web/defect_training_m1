@@ -4,6 +4,7 @@ A run lives in runs/<run_id>/:
   config.yaml   what to train (TrainConfig + resolved paths), written before the worker starts
   status.json   current state, updated by the worker (queued/running/finished/stopped/failed)
   events.jsonl  every event the worker emitted (one JSON object per line)
+  train.log     the Train tab's log, one section per attempt (start, then each resume)
   train/        Ultralytics output (weights/best.pt, weights/last.pt, results.csv, plots)
 
 The worker (defect_inspection.worker) runs in a separate process. It prints each event to stdout
@@ -30,6 +31,7 @@ from defect_inspection.core.project import Project
 from defect_inspection.platform_utils import atomic_write_text, default_dataloader_workers, resolve_device
 
 EVENT_PREFIX = "@@DL "
+LOG_FILE = "train.log"
 RunState = Literal["queued", "running", "finished", "stopped", "failed"]
 
 # Ultralytics' built-in (online) augmentation, all switched off when online_augment=False.
@@ -205,6 +207,24 @@ def decode_event(line: str) -> dict[str, Any] | None:
     except ValueError:
         return None
     return event if isinstance(event, dict) and "type" in event else None
+
+
+def open_run_log(run_dir: Path):
+    """Append handle for the run's train.log (each attempt adds its own section)."""
+    return open(Path(run_dir) / LOG_FILE, "a", encoding="utf-8")
+
+
+def log_header(resume: bool, now: float | None = None) -> str:
+    """First line of an attempt's section in train.log."""
+    return f"===== {'재개' if resume else '시작'} {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))} ====="
+
+
+def read_run_log(run_dir: Path) -> str | None:
+    """The saved log of a run (all attempts), or None for runs from before logs were saved."""
+    try:
+        return (Path(run_dir) / LOG_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def read_events(run_dir: Path) -> list[dict[str, Any]]:
