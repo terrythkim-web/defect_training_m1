@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPath
 from defect_inspection.core import label_edit
 from defect_inspection.core.roi import RoiOptions, move_roi, resize_roi, roi_from_drag
 from defect_inspection.core.sam_assist import SamPrompt
-from defect_inspection.ui.canvas.image_canvas import ImageCanvas
+from defect_inspection.ui.canvas.image_canvas import ImageCanvas, native_shortcut
 from defect_inspection.ui.canvas.roi_tool import RoiItem, RoiSession
 from defect_inspection.ui.canvas.session import LabelSession
 from defect_inspection.ui.canvas.shape_items import ShapeItem
@@ -496,4 +496,8 @@ class LabelingCanvas(ImageCanvas):
         if roi is None:
             self.message.emit(self.tr("ROI가 너무 작습니다. 드래그하거나 고정 크기를 고르세요"))
         elif self.roi_session is not None:
+            replaced = len(self.roi_session.image_rois)
             self.roi_session.add(roi)
+            if replaced:
+                self.message.emit(self.tr("이전 ROI {0}개를 새 ROI로 바꿨습니다 (되돌리기: {1})").format(
+                    replaced, native_shortcut("Ctrl+Z")))

@@ -77,7 +77,10 @@ class RoiSession(QObject):
 
     # ---- edits ----------------------------------------------------------------------------
     def add(self, roi: Roi) -> None:
-        self._push(self.image_rois + [roi], self.common, self.tr("ROI 추가"))
+        """A newly drawn ROI replaces this image's earlier ones (one ROI per image; common ROIs
+        stay). Undo brings the earlier ROIs back."""
+        text = self.tr("ROI 다시 지정") if self.image_rois else self.tr("ROI 추가")
+        self._push([roi], self.common, text)
 
     def replace(self, roi: Roi) -> None:
         image = [roi if r.id == roi.id else r for r in self.image_rois]

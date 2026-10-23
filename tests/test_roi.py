@@ -301,3 +301,22 @@ def test_rois_survive_reopen(window, qapp, tmp_path):
     finally:
         w2.project_dirty = False
         w2.close()
+
+
+def test_new_roi_replaces_the_previous_one(window, qapp):
+    drag(window, (300, 200), (400, 280))
+    window.roi_bar.btn_common.click()  # a common ROI must survive
+    drag(window, (50, 60), (150, 160))
+    first = store_on_disk(window).image_rois("a.png")
+    drag(window, (200, 50), (330, 150))
+    store = store_on_disk(window)
+    (roi,) = store.image_rois("a.png")
+    assert roi.bounds() == pytest.approx((200, 50, 330, 150), abs=1.5) and len(store.common) == 1
+    assert "이전 ROI 1개를 새 ROI로 바꿨습니다" in window.statusBar().currentMessage()
+    assert len(window.canvas.roi_items()) == 2  # the new ROI + the common one
+    window.act_undo.trigger()
+    assert store_on_disk(window).image_rois("a.png") == first
+    window.image_panel.select("b.png")  # other images keep their own ROIs
+    assert wait_until(qapp, lambda: window.roi_session is not None and window.roi_session.image_path == "b.png")
+    drag(window, (20, 20), (120, 120))
+    assert store_on_disk(window).image_rois("a.png") == first

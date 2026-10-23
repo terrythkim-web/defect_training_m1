@@ -190,6 +190,7 @@ class AugmentPanel(QWidget):
             w.valueChanged.connect(self._on_edit)
         self.cp_prob.valueChanged.connect(self._on_edit)
         self.cp_enabled.toggled.connect(self._on_edit)
+        dt_box = self._build_defect_transform_ui()
 
         opts = QGridLayout()
         opts.addWidget(QLabel(self.tr("증강 개수")), 0, 0)
@@ -215,6 +216,7 @@ class AugmentPanel(QWidget):
         settings_layout.setContentsMargins(0, 0, 0, 0)
         settings_layout.addLayout(grid)
         settings_layout.addWidget(opts_box)
+        settings_layout.addWidget(dt_box)
         settings_layout.addWidget(crop_box)
         settings_layout.addStretch(1)
         scroll = QScrollArea()
@@ -391,6 +393,17 @@ class AugmentPanel(QWidget):
         self.cp_enabled.setChecked(cfg.copy_paste.enabled)
         self.cp_prob.setValue(cfg.copy_paste.p)
         self.cp_max.setValue(cfg.copy_paste.max_patches)
+        dt = cfg.defect_transform
+        self.dt_box.setChecked(dt.enabled)
+        self.dt_mode.setCurrentIndex(self.dt_mode.findData(dt.mode))
+        self.dt_prob.setValue(dt.p)
+        self.dt_max.setValue(dt.max_defects)
+        self.dt_scale_min.setValue(round(dt.scale_min * 100))
+        self.dt_scale_max.setValue(round(dt.scale_max * 100))
+        self.dt_angle.setValue(round(dt.max_angle))
+        self.dt_direction.setCurrentIndex(self.dt_direction.findData(dt.direction))
+        self.dt_shift.setValue(round(dt.max_shift * 100))
+        self.dt_on_ok.setChecked(dt.on_ok_images)
         self._loading = False
         self._sync_preset_combo()
 
@@ -402,7 +415,85 @@ class AugmentPanel(QWidget):
             min_area_px=float(self.min_area.value()),
             copy_paste={"enabled": self.cp_enabled.isChecked(), "p": self.cp_prob.value(),
                         "max_patches": self.cp_max.value()},
+            defect_transform=self._defect_transform_value(),
         )
+
+    # ---- defect transform ----------------------------------------------------------------------
+    def _build_defect_transform_ui(self) -> QGroupBox:
+        box = QGroupBox(self.tr("결함 변형 (결함 크기·각도·위치 랜덤 변경)"))
+        box.setCheckable(True)
+        box.setChecked(False)
+        box.setToolTip(self.tr(
+            "라벨된 결함을 잘라 크기와 각도를 바꾸고, 정한 방향으로 옮겨 붙입니다 (Train 증강본에만). "
+            "Polygon 라벨이면 결함 모양대로, BBox 라벨이면 상자째 옮깁니다."))
+        self.dt_box = box
+        self.dt_mode = QComboBox()
+        self.dt_mode.addItem(self.tr("추가 (원래 결함도 남김)"), "add")
+        self.dt_mode.addItem(self.tr("이동 (원래 자리는 주변으로 채움)"), "move")
+        self.dt_prob = QDoubleSpinBox()
+        self.dt_prob.setRange(0.0, 1.0)
+        self.dt_prob.setSingleStep(0.1)
+        self.dt_max = QSpinBox()
+        self.dt_max.setRange(1, 10)
+        self.dt_scale_min, self.dt_scale_max = QSpinBox(), QSpinBox()
+        for w in (self.dt_scale_min, self.dt_scale_max):
+            w.setRange(20, 300)
+            w.setSingleStep(5)
+            w.setSuffix(" %")
+        self.dt_angle = QSpinBox()
+        self.dt_angle.setRange(0, 180)
+        self.dt_angle.setPrefix("± ")
+        self.dt_angle.setSuffix("°")
+        self.dt_direction = QComboBox()
+        self.dt_direction.addItem(self.tr("수평 + 수직"), "both")
+        self.dt_direction.addItem(self.tr("수평만"), "horizontal")
+        self.dt_direction.addItem(self.tr("수직만"), "vertical")
+        self.dt_shift = QSpinBox()
+        self.dt_shift.setRange(0, 100)
+        self.dt_shift.setSuffix(self.tr(" % (이미지 크기 대비)"))
+        self.dt_on_ok = QCheckBox(self.tr("OK 이미지에도 붙이기"))
+        self.dt_prob.valueChanged.connect(self._on_edit)
+        for w in (self.dt_max, self.dt_scale_min, self.dt_scale_max, self.dt_angle, self.dt_shift):
+            w.valueChanged.connect(self._on_edit)
+        for w in (self.dt_mode, self.dt_direction):
+            w.currentIndexChanged.connect(self._on_edit)
+        box.toggled.connect(self._on_edit)
+        self.dt_on_ok.toggled.connect(self._on_edit)
+        self.dt_scale_min.valueChanged.connect(lambda v: self.dt_scale_max.setMinimum(v))
+        self.dt_scale_max.valueChanged.connect(lambda v: self.dt_scale_min.setMaximum(v))
+
+        def pair(a: QWidget, b: QWidget) -> QHBoxLayout:
+            row = QHBoxLayout()
+            row.addWidget(a)
+            row.addWidget(QLabel("~"))
+            row.addWidget(b)
+            return row
+
+        grid = QGridLayout(box)
+        grid.addWidget(QLabel(self.tr("원래 결함")), 0, 0)
+        grid.addWidget(self.dt_mode, 0, 1)
+        grid.addWidget(QLabel(self.tr("확률 / 최대 개수")), 1, 0)
+        prob_row = QHBoxLayout()
+        prob_row.addWidget(self.dt_prob)
+        prob_row.addWidget(self.dt_max)
+        grid.addLayout(prob_row, 1, 1)
+        grid.addWidget(QLabel(self.tr("크기")), 2, 0)
+        grid.addLayout(pair(self.dt_scale_min, self.dt_scale_max), 2, 1)
+        grid.addWidget(QLabel(self.tr("회전 각도")), 3, 0)
+        grid.addWidget(self.dt_angle, 3, 1)
+        grid.addWidget(QLabel(self.tr("이동 방향")), 4, 0)
+        grid.addWidget(self.dt_direction, 4, 1)
+        grid.addWidget(QLabel(self.tr("최대 이동")), 5, 0)
+        grid.addWidget(self.dt_shift, 5, 1)
+        grid.addWidget(self.dt_on_ok, 6, 0, 1, 2)
+        return box
+
+    def _defect_transform_value(self) -> dict:
+        return {"enabled": self.dt_box.isChecked(), "mode": self.dt_mode.currentData(),
+                "p": self.dt_prob.value(), "max_defects": self.dt_max.value(),
+                "scale_min": self.dt_scale_min.value() / 100, "scale_max": self.dt_scale_max.value() / 100,
+                "max_angle": float(self.dt_angle.value()), "direction": self.dt_direction.currentData(),
+                "max_shift": self.dt_shift.value() / 100, "on_ok_images": self.dt_on_ok.isChecked()}
 
     def _on_edit(self) -> None:
         if self._loading or self.project is None:
@@ -694,6 +785,8 @@ class AugmentPanel(QWidget):
         lines = [self.tr("Crop 완료 ({0:.1f}초): Train {1}장 (crop {2} + 증강 {3}), Val {4}장 (결함 포함 {5})").format(
                      r.elapsed_s, r.total_train, r.train_crops, r.augmented, r.val_crops, r.val_defect_crops),
                  self.tr("원본: Train {0} / Val {1} · 종류: {2}").format(r.train_images, r.val_images, kinds)]
+        if r.defect_transformed:
+            lines.append(self.tr("결함 변형: {0}장").format(r.defect_transformed))
         if r.dropped_labels:
             lines.append(self.tr("경계·증강으로 제외된 라벨: {0}개").format(r.dropped_labels))
         if r.no_windows:
@@ -711,6 +804,8 @@ class AugmentPanel(QWidget):
             lines.append(self.tr("OK 이미지: Train {0} / Val {1}").format(report.ok_train, report.ok_val))
         if report.copy_pasted:
             lines.append(self.tr("Copy-Paste 합성: {0}장").format(report.copy_pasted))
+        if report.defect_transformed:
+            lines.append(self.tr("결함 변형: {0}장").format(report.defect_transformed))
         if report.dropped_labels:
             lines.append(self.tr("증강 중 제거된 라벨: {0}개").format(report.dropped_labels))
         if report.skipped_unlabeled:
@@ -746,4 +841,6 @@ def _comparable(cfg: AugmentConfig) -> dict:
     """Settings that define a preset (only enabled transforms count)."""
     d = cfg.model_dump(mode="json")
     d["transforms"] = {k: v for k, v in d["transforms"].items() if v["enabled"]}
+    if not d["defect_transform"]["enabled"]:  # its other values do not matter while it is off
+        d["defect_transform"] = {"enabled": False}
     return d

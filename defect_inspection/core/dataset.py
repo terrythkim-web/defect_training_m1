@@ -26,7 +26,13 @@ import numpy as np
 import yaml
 
 from defect_inspection.core.annotation import BBox, ImageAnnotations, Polygon, write_yolo_txt
-from defect_inspection.core.augment_config import CopyPasteSetting
+from defect_inspection.core.augment_config import CopyPasteSetting, DefectTransformSetting
+from defect_inspection.core.defect_patches import (  # noqa: F401 - extract/paste re-exported
+    Patch,
+    extract_patches,
+    paste_patches,
+    transform_defects,
+)
 from defect_inspection.core.imaging import to_training_8bit
 from defect_inspection.core.project import ImageEntry, Project, Split, compute_split
 from defect_inspection.platform_utils import atomic_write_text, imread_unicode, imwrite_unicode
@@ -53,6 +59,7 @@ class BuildReport:
     ok_val: int = 0
     augmented: int = 0  # extra training images generated
     copy_pasted: int = 0  # augmented OK images that received pasted defects
+    defect_transformed: int = 0  # augmented images with moved / resized / rotated defects
     dropped_labels: int = 0  # labels removed by the F3.6 rule during augmentation
     skipped_unlabeled: list[str] = field(default_factory=list)
     skipped_unreadable: list[str] = field(default_factory=list)
@@ -154,78 +161,6 @@ def val_warnings(project: Project, split: dict[str, Split], defect: list[ImageEn
     return warnings
 
 
-# ---- Copy-Paste (F3.3) ------------------------------------------------------------------
-
-@dataclass
-class Patch:
-    pixels: np.ndarray
-    mask: np.ndarray  # float32 0..1, feathered edges
-    shape: Shape  # in patch coordinates
-
-
-def extract_patches(image: np.ndarray, annotations: ImageAnnotations, max_fraction: float = 0.5) -> list[Patch]:
-    """Cut every confirmed defect out of a training image (pixels + soft mask + its label)."""
-    h, w = image.shape[:2]
-    patches = []
-    for shape in annotations.confirmed():
-        x1, y1, x2, y2 = shape.bounds()
-        x1, y1 = max(0, int(np.floor(x1))), max(0, int(np.floor(y1)))
-        x2, y2 = min(w, int(np.ceil(x2))), min(h, int(np.ceil(y2)))
-        pw, ph = x2 - x1, y2 - y1
-        if pw < 2 or ph < 2 or pw > w * max_fraction or ph > h * max_fraction:
-            continue
-        mask = np.zeros((ph, pw), np.uint8)
-        local = [(px - x1, py - y1) for px, py in shape.to_points()]
-        pts = np.round((np.array(local, np.float32) - 0.5) * 16).astype(np.int32)
-        cv2.fillPoly(mask, [pts], 255, shift=4)
-        soft = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (5, 5), 0) if min(pw, ph) >= 8 else mask / 255.0
-        if isinstance(shape, BBox):
-            local_shape = shape.model_copy(update={"x1": shape.x1 - x1, "y1": shape.y1 - y1,
-                                                   "x2": shape.x2 - x1, "y2": shape.y2 - y1})
-        else:
-            local_shape = shape.model_copy(update={"points": local})
-        patches.append(Patch(image[y1:y2, x1:x2].copy(), soft.astype(np.float32), local_shape))
-    return patches
-
-
-def _overlaps(box: tuple[float, float, float, float], shapes: list[Shape], margin: float = 2.0) -> bool:
-    x1, y1, x2, y2 = box
-    for s in shapes:
-        a1, b1, a2, b2 = s.bounds()
-        if x1 < a2 + margin and a1 < x2 + margin and y1 < b2 + margin and b1 < y2 + margin:
-            return True
-    return False
-
-
-def paste_patches(image: np.ndarray, annotations: ImageAnnotations, patches: list[Patch],
-                  rng: np.random.Generator, max_patches: int, tries: int = 20) -> tuple[np.ndarray, ImageAnnotations]:
-    """Blend 1..max_patches random patches at free spots and add their labels."""
-    out = image.copy()
-    shapes = list(annotations.confirmed())
-    h, w = image.shape[:2]
-    for _ in range(int(rng.integers(1, max_patches + 1))):
-        patch = patches[int(rng.integers(len(patches)))]
-        ph, pw = patch.pixels.shape[:2]
-        if pw >= w or ph >= h:
-            continue
-        for _ in range(tries):
-            ox, oy = int(rng.integers(0, w - pw + 1)), int(rng.integers(0, h - ph + 1))
-            if not _overlaps((ox, oy, ox + pw, oy + ph), shapes):
-                break
-        else:
-            continue
-        region = out[oy:oy + ph, ox:ox + pw].astype(np.float32)
-        alpha = patch.mask if out.ndim == 2 else patch.mask[:, :, None]
-        out[oy:oy + ph, ox:ox + pw] = np.clip(alpha * patch.pixels + (1 - alpha) * region, 0, 255).astype(np.uint8)
-        s = patch.shape
-        if isinstance(s, BBox):
-            placed = BBox(class_id=s.class_id, x1=s.x1 + ox, y1=s.y1 + oy, x2=s.x2 + ox, y2=s.y2 + oy)
-        else:
-            placed = Polygon(class_id=s.class_id, points=[(x + ox, y + oy) for x, y in s.points])
-        shapes.append(placed)
-    return out, annotations.model_copy(update={"shapes": shapes})
-
-
 # ---- build -------------------------------------------------------------------------------
 
 def _out_suffix(src: Path) -> str:
@@ -308,11 +243,13 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
                          and src.suffix.lower() in (".png", ".jpg", ".jpeg"))
             loaded[entry.path] = (image, ann, src, copyable)
 
-        # Copy-Paste patches: from training defect images only.
+        # Copy-Paste / defect transform patches: from training defect images only.
         patches: list[Patch] = []
         cp: CopyPasteSetting = aug_cfg.copy_paste
+        dt: DefectTransformSetting = aug_cfg.defect_transform
+        dt_ok = dt.enabled and dt.on_ok_images
         for entry in defect:
-            if cp.enabled and entry.path in loaded and split[entry.path] == "train":
+            if (cp.enabled or dt_ok) and entry.path in loaded and split[entry.path] == "train":
                 image, ann, _, _ = loaded[entry.path]
                 patches.extend(extract_patches(image, ann))
             tick("결함 패치 수집")
@@ -351,9 +288,18 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
                 continue
             for k in range(1, aug_cfg.multiplier + 1):
                 src_img, src_ann = image, confirmed
+                # rng is drawn for the defect transform only when it is on, so builds without it
+                # stay identical to earlier ones
                 if is_ok and patches and cp.enabled and rng.random() < cp.p:
-                    src_img, src_ann = paste_patches(image, confirmed, patches, rng, cp.max_patches)
+                    src_img, src_ann = paste_patches(image, confirmed, patches, rng, cp.max_patches,
+                                                     transform=dt if dt.enabled else None)
                     report.copy_pasted += 1
+                elif is_ok and patches and dt_ok and rng.random() < dt.p:
+                    src_img, src_ann = paste_patches(image, confirmed, patches, rng, dt.max_defects, transform=dt)
+                    report.defect_transformed += 1
+                elif not is_ok and dt.enabled and rng.random() < dt.p:
+                    src_img, src_ann, placed = transform_defects(image, confirmed, dt, rng)
+                    report.defect_transformed += placed > 0
                 name = f"{stem}_aug{k:03d}{suffix}"
                 result = augmenter(src_img, src_ann, image_name=name)
                 _write_image(img_dir / name, result.image)

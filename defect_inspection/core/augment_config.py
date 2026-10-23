@@ -6,9 +6,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,30 @@ class CopyPasteSetting(BaseModel):
     max_patches: int = Field(default=2, ge=1, le=10)
 
 
+class DefectTransformSetting(BaseModel):
+    """결함 변형: each labeled defect is cut out, given a random size and angle, and placed shifted
+    along the allowed direction (core/defect_patches). In defect images "add" keeps the original
+    defect and "move" fills its place from the surroundings; with on_ok_images Train defects are
+    also placed onto OK images (shifted from where they were in their own image)."""
+
+    enabled: bool = False
+    p: float = Field(default=0.5, ge=0.0, le=1.0)  # chance per augmented copy
+    mode: Literal["add", "move"] = "add"
+    max_defects: int = Field(default=1, ge=1, le=10)  # defects transformed / pasted per copy
+    scale_min: float = Field(default=0.8, ge=0.2, le=3.0)
+    scale_max: float = Field(default=1.25, ge=0.2, le=3.0)
+    max_angle: float = Field(default=30.0, ge=0.0, le=180.0)  # random angle in ±max_angle degrees
+    direction: Literal["both", "horizontal", "vertical"] = "both"
+    max_shift: float = Field(default=0.5, ge=0.0, le=1.0)  # of the image width / height
+    on_ok_images: bool = True
+
+    @model_validator(mode="after")
+    def _check_scale(self) -> DefectTransformSetting:
+        if self.scale_min > self.scale_max:
+            raise ValueError("scale_min must not exceed scale_max")
+        return self
+
+
 # ---- configuration ---------------------------------------------------------------------
 
 class TransformSetting(BaseModel):
@@ -71,6 +96,7 @@ class AugmentConfig(BaseModel):
     min_visibility: float = Field(default=0.4, ge=0.0, le=1.0)  # F3.6: visible fraction to keep a label
     min_area_px: float = Field(default=16.0, ge=0.0)  # F3.6: smaller labels are dropped
     copy_paste: CopyPasteSetting = Field(default_factory=CopyPasteSetting)
+    defect_transform: DefectTransformSetting = Field(default_factory=DefectTransformSetting)
 
     def setting(self, key: str) -> TransformSetting:
         if key not in TRANSFORM_KEYS:

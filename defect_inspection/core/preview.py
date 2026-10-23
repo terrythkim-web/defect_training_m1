@@ -59,7 +59,18 @@ def augment_previews(image8: np.ndarray, annotations: ImageAnnotations, config: 
     s = small.shape[1] / image8.shape[1]
     config = config.model_copy(update={"min_area_px": config.min_area_px * s * s})
     augmenter = Augmenter(config, channels=channels, seed=seed)
-    return [draw_labels(r.image, r.annotations, colors) for r in (augmenter(small, ann) for _ in range(n))]
+    dt = config.defect_transform
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(n):
+        image, labels = small, ann
+        if dt.enabled and rng.random() < dt.p:  # same-image defect transform, as in the build
+            from defect_inspection.core.defect_patches import transform_defects
+
+            image, labels, _ = transform_defects(small, ann, dt, rng)
+        r = augmenter(image, labels)
+        out.append(draw_labels(r.image, r.annotations, colors))
+    return out
 
 
 # Ground truth vs prediction (Result tab, PRD F5.1): two fixed hues from the validated palette,

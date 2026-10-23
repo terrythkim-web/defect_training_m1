@@ -43,6 +43,7 @@ from defect_inspection.core.dataset import (
     val_warnings,
     write_data_yaml,
 )
+from defect_inspection.core.defect_patches import Patch, extract_patches, paste_patches, transform_defects
 from defect_inspection.core.imaging import to_training_8bit
 from defect_inspection.core.project import Project
 from defect_inspection.core.roi import RoiStore
@@ -241,6 +242,7 @@ class CropBuildReport:
     val_crops: int = 0
     val_defect_crops: int = 0  # Val crops that contain at least one label
     augmented: int = 0
+    defect_transformed: int = 0  # augmented crops with moved / resized / rotated defects
     dropped_labels: int = 0  # F7.3 rule at the crop border (+ F3.6 during augmentation)
     by_kind: dict[str, int] = field(default_factory=lambda: {k: 0 for k in KINDS})
     skipped_unlabeled: list[str] = field(default_factory=list)
@@ -289,6 +291,8 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
     augmenter = Augmenter(aug_cfg, channels=channels, seed=cfg.split.seed) if ccfg.multiplier else None
     defect_paths = {e.path for e in defect}
     entries = defect + ok
+    dt = aug_cfg.defect_transform
+    use_dt = dt.enabled and ccfg.multiplier > 0
     steps = 100  # progress resolution per image
 
     def tick(index: int, fraction: float, message: str) -> None:
@@ -298,6 +302,16 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
             progress(index * steps + int(fraction * steps), len(entries) * steps, message)
 
     try:
+        # Defect transform onto crops without labels: patches from Train defect images.
+        patches: list[Patch] = []
+        if use_dt and dt.on_ok_images:
+            for entry in defect:
+                if split[entry.path] != "train":
+                    continue
+                raw = imread_unicode(project.image_abspath(entry))
+                if raw is not None:
+                    image = to_training_8bit(raw, channels)
+                    patches.extend(extract_patches(image, project.load_labels(entry, size=image.shape[1::-1])))
         for index, entry in enumerate(entries):
             tick(index, 0.0, f"읽는 중: {entry.path}")
             src = project.image_abspath(entry)
@@ -327,6 +341,7 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
             img_dir, lbl_dir = work_dir / "images" / part, work_dir / "labels" / part
             counters = {k: 0 for k in KINDS}
             copies = ccfg.multiplier if part == "train" else 0
+            dt_rng = image_rng(cfg.split.seed + 1, entry.path) if use_dt and copies else None
             for n, window in enumerate(windows):
                 counters[window.kind] += 1
                 name = f"{stem}__{window.kind}{counters[window.kind]:03d}"
@@ -344,7 +359,16 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
                     report.val_defect_crops += bool(labels.shapes)
                 for k in range(1, copies + 1):
                     aug_name = f"{name}_aug{k:02d}"
-                    result = augmenter(pixels, labels, image_name=aug_name + suffix)
+                    src_pixels, src_labels = pixels, labels
+                    if dt_rng is not None and dt_rng.random() < dt.p:
+                        if labels.shapes:
+                            src_pixels, src_labels, placed = transform_defects(pixels, labels, dt, dt_rng)
+                            report.defect_transformed += placed > 0
+                        elif patches and dt.on_ok_images:
+                            src_pixels, src_labels = paste_patches(pixels, labels, patches, dt_rng,
+                                                                   dt.max_defects, transform=dt)
+                            report.defect_transformed += len(src_labels.shapes) > 0
+                    result = augmenter(src_pixels, src_labels, image_name=aug_name + suffix)
                     _write_image(img_dir / f"{aug_name}{suffix}", result.image)
                     write_yolo_txt(lbl_dir / f"{aug_name}.txt", result.annotations, cfg.task)
                     report.augmented += 1
