@@ -112,6 +112,9 @@ class ProjectConfig(BaseModel):
     augment: AugmentConfig = Field(default_factory=lambda: BUILTIN_PRESETS[DEFAULT_PRESET].model_copy(deep=True))
     # Crop dataset (F7.2-F7.4); manual ROIs themselves live in crops.json.
     crop: CropConfig = Field(default_factory=CropConfig)
+    # Images that are slices/copies of another project image (core/image_groups): member -> source.
+    # A group stays on one side of the Train/Val split (dataset.split_images).
+    source_groups: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_unique(self) -> ProjectConfig:
@@ -359,6 +362,10 @@ class Project:
                         removed_dir.mkdir(parents=True, exist_ok=True)
                         os.replace(label, removed_dir / label.name)
                 result.removed.append(entry.path)
+        if result.removed:
+            gone = set(result.removed)
+            self.config.source_groups = {m: s for m, s in self.config.source_groups.items()
+                                         if m not in gone and s not in gone}
         if not self.images_dir.is_dir():
             return result
 

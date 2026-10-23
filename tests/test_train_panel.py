@@ -357,3 +357,13 @@ def test_refresh_after_dataset_build(window, panel, qapp):
     window.augment_panel.start_build()
     assert wait_until(qapp, lambda: not window.augment_panel.is_building)
     assert panel.btn_start.isEnabled()
+
+
+def test_dataset_warnings_logged_at_start(panel, qapp):
+    done = []
+    panel.run_finished.connect(lambda run, state: done.append(run))
+    assert panel.start()
+    assert wait_until(qapp, lambda: done)
+    log = log_text(panel)
+    assert "⚠ 데이터셋: Val 결함이 1개뿐입니다" in log  # 4 labeled images, 1 in Val
+    assert "⚠ 데이터셋" in (Path(done[0]) / LOG_FILE).read_text(encoding="utf-8")

@@ -88,9 +88,26 @@ class ImageListPanel(QWidget):
                 self._items_by_abspath[abspath] = item
                 self.thumbnails.request(abspath)
         self.list.blockSignals(False)
+        self.refresh_groups()
         self.apply_filter()
         if self.list.currentItem() is None:
             self.current_changed.emit(None)
+
+    def refresh_groups(self) -> None:
+        """Tooltips naming the source image of slices/copies (project.config.source_groups)."""
+        groups = self.project.config.source_groups if self.project is not None else {}
+        members: dict[str, int] = {}
+        for source in groups.values():
+            members[source] = members.get(source, 0) + 1
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            path = item.data(PATH_ROLE)
+            if path in groups:
+                item.setToolTip(self.tr("원본: {0} (같은 원본에서 잘라낸 이미지)").format(groups[path]))
+            elif path in members:
+                item.setToolTip(self.tr("이 이미지에서 잘라낸 이미지 {0}장이 프로젝트에 있습니다").format(members[path]))
+            else:
+                item.setToolTip("")
 
     def apply_sync(self, added: list[str], removed: list[str]) -> None:
         """Add/remove items for images that appeared in or vanished from images/, keeping the
@@ -110,6 +127,7 @@ class ImageListPanel(QWidget):
             abspath = str(self.project.image_abspath(path))
             self._items_by_abspath[abspath] = item
             self.thumbnails.request(abspath)
+        self.refresh_groups()
         self.apply_filter()
         if self.list.currentItem() is None:
             self.current_changed.emit(None)

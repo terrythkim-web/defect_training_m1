@@ -35,6 +35,7 @@ from defect_inspection.core.sam_assist import DEFAULT_SAM_MODEL, SAM_MODEL_CHOIC
 from defect_inspection import platform_utils
 from defect_inspection.platform_utils import OVERLAY_SCROLLBARS, cache_dir, config_dir, detect_device
 from defect_inspection.ui.canvas.image_canvas import CanvasPanel
+from defect_inspection.ui.group_checker import GroupChecker
 from defect_inspection.ui.new_project_dialog import NewProjectDialog
 from defect_inspection.core.roi import RoiStore
 from defect_inspection.ui.canvas.labeling_canvas import LabelingCanvas
@@ -105,6 +106,13 @@ class MainWindow(QMainWindow):
         self.images_sync_timer.setSingleShot(True)
         self.images_sync_timer.setInterval(IMAGES_SYNC_DELAY_MS)
         self.images_sync_timer.timeout.connect(self.sync_images_folder)
+        # Slices / copies of other project images (core/image_groups), checked in the background.
+        self.group_checker = GroupChecker(self)
+        self.group_checker.finished.connect(self._on_groups_found)
+        self._group_generation = 0
+        self._groups_applied = 0
+        self._show_groups_when_done = False
+        self._group_notice: QMessageBox | None = None
 
         self.resize(1600, 900)
         self._build_actions()
@@ -271,7 +279,7 @@ class MainWindow(QMainWindow):
         self.augment_panel = AugmentPanel(self.presets_dir)
         self.augment_panel.changed.connect(self.mark_dirty)
         self.augment_panel.annotations_provider = self._current_annotations
-        self.augment_panel.before_build = self._save_all
+        self.augment_panel.before_build = self._before_build
         self.train_panel = TrainPanel(self.weights_dir)
         self.train_panel.before_start = self._before_training
         self.augment_panel.build_finished.connect(lambda _report: self.train_panel.refresh_datasets())
@@ -376,6 +384,7 @@ class MainWindow(QMainWindow):
         self._close_session()
         self.save_layout()
         self.sam_controller.shutdown()
+        self.group_checker.shutdown()
         self.image_cache.shutdown()
         self.thumbnails.shutdown()
         super().closeEvent(event)
@@ -417,6 +426,7 @@ class MainWindow(QMainWindow):
             self.mark_dirty()
             self._show_sync_message(changes)
         self._update_title()
+        self._start_group_check()
         self.project_changed.emit(project)
 
     # ---- images/ folder sync ---------------------------------------------------------------
@@ -453,7 +463,76 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self._update_status()
         self._show_sync_message(changes)
+        self._start_group_check()
         return True
+
+    # ---- slices / copies of other images (core/image_groups) --------------------------------
+    def _start_group_check(self, show_result: bool = False) -> None:
+        if self.project is None:
+            return
+        self._show_groups_when_done = self._show_groups_when_done or show_result
+        items = [(e.path, self.project.image_abspath(e)) for e in self.project.config.images]
+        self._group_generation = self.group_checker.check(items)
+
+    def check_image_groups_dialog(self) -> None:
+        """Menu: check again and list every group, also when nothing new was found."""
+        if self.project is not None:
+            self.statusBar().showMessage(self.tr("중복·조각 이미지 검사 중…"), 5000)
+            self._start_group_check(show_result=True)
+
+    def _on_groups_found(self, generation: int, groups: dict) -> None:
+        if generation == self._group_generation and generation != self._groups_applied:
+            self._apply_groups(generation, groups)
+
+    def _before_build(self) -> None:
+        # The split keeps groups together, so a build must not start on a stale result.
+        if self.group_checker.busy:
+            self.statusBar().showMessage(self.tr("중복·조각 이미지 검사를 마치는 중…"))
+            result = self.group_checker.wait()
+            if result is not None:
+                self._on_groups_found(*result)
+        self._save_all()
+
+    def _apply_groups(self, generation: int, groups: dict) -> None:
+        self._groups_applied = generation
+        if self.project is None:
+            return
+        known = {e.path for e in self.project.config.images}
+        groups = {m: s for m, s in groups.items() if m in known and s in known}
+        old = self.project.config.source_groups
+        new_members = sorted(m for m, s in groups.items() if old.get(m) != s)
+        if groups != old:
+            self.project.config.source_groups = groups
+            self.mark_dirty()
+            self.image_panel.refresh_groups()
+        show_all = self._show_groups_when_done
+        self._show_groups_when_done = False
+        if new_members or show_all:
+            self._show_group_notice(groups, new_members)
+
+    def _show_group_notice(self, groups: dict, new_members: list[str]) -> None:
+        by_source: dict[str, list[str]] = {}
+        for member, source in sorted(groups.items()):
+            by_source.setdefault(source, []).append(member)
+        if not groups:
+            text = self.tr("다른 이미지에서 잘라냈거나 똑같은 이미지는 없습니다.")
+        else:
+            text = self.tr(
+                "같은 원본에서 잘라낸(또는 똑같은) 이미지 {0}장을 찾았습니다 (원본 {1}장).\n\n"
+                "같은 결함이 두 번 학습되고, 원본과 조각이 Train과 Val에 나뉘면 Val이 이미 본 결함으로 "
+                "채점됩니다. 원본이나 조각 중 한 종류만 쓰는 것을 권장합니다.\n\n"
+                "그대로 두면 묶인 이미지는 Train/Val 같은 쪽에 둡니다.").format(len(groups), len(by_source))
+        if self._group_notice is not None:
+            self._group_notice.close()
+        box = QMessageBox(QMessageBox.Icon.Information if not groups else QMessageBox.Icon.Warning,
+                          self.tr("중복·조각 이미지"), text, QMessageBox.StandardButton.Ok, self)
+        if groups:
+            box.setDetailedText("\n".join(f"{source} ← {', '.join(members)}" for source, members in by_source.items()))
+        box.setModal(False)
+        box.show()
+        self._group_notice = box
+        self.statusBar().showMessage(
+            self.tr("중복·조각 이미지 {0}장 (새로 {1}장)").format(len(groups), len(new_members)), 8000)
 
     def _show_sync_message(self, changes) -> None:
         parts = []
@@ -485,6 +564,7 @@ class MainWindow(QMainWindow):
         if added:
             self.mark_dirty()
             self._refresh_lists()
+            self._start_group_check()
         return len(added)
 
     def new_project_dialog(self) -> None:
@@ -796,6 +876,10 @@ class MainWindow(QMainWindow):
         tool_menu = bar.addMenu(self.tr("도구"))
         for tool in (Tool.SELECT, Tool.BBOX, Tool.POLYGON, Tool.CROP_ROI, Tool.SAM, Tool.ERASER):
             tool_menu.addAction(self.tool_actions[tool])
+        tool_menu.addSeparator()
+        self.act_check_groups = tool_menu.addAction(self.tr("중복·조각 이미지 검사"), self.check_image_groups_dialog)
+        self._project_actions.append(self.act_check_groups)
+        self.act_check_groups.setEnabled(self.project is not None)
         menu = bar.addMenu(self.tr("설정"))
         self.act_sam_model = menu.addAction(self.tr("SAM 모델…"), self.choose_sam_model_dialog)
         self.act_autosave = menu.addAction(self.tr("자동 저장 간격…"), self.autosave_interval_dialog)

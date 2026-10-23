@@ -36,6 +36,7 @@ from defect_inspection.core.trainer import (
     RunInfo,
     TrainConfig,
     list_runs,
+    load_spec,
     log_header,
     open_run_log,
     prepare_run,
@@ -323,12 +324,25 @@ class TrainPanel(QWidget):
         except OSError as e:
             self.log_view.appendPlainText(self.tr("로그 파일을 열 수 없습니다: {0}").format(e))
         self._log(log_header(resume))
+        if not resume:
+            self._log_dataset_warnings(run)
         self.progress.setValue(0)
         self._log(self.tr("{0}: {1}").format(self.tr("재개") if resume else self.tr("시작"), run.name))
         self.process.start(run, resume=resume)
         self.status_label.setText(self.tr("학습 프로세스 시작 중…"))
         self.refresh_history()
         self._update_buttons()
+
+    def _log_dataset_warnings(self, run: Path) -> None:
+        """The dataset's Val reliability warnings (dataset.val_warnings), so they stay in train.log."""
+        from defect_inspection.core.crop import read_build_info
+
+        try:
+            info = read_build_info(Path(load_spec(run).data_yaml).parent)
+        except (OSError, ValueError):
+            return
+        for warning in (info.get("report") or {}).get("warnings") or []:
+            self._log(self.tr("⚠ 데이터셋: {0}").format(warning))
 
     def stop(self) -> None:
         self.process.stop()

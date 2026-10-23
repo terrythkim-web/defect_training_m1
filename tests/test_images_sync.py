@@ -170,3 +170,11 @@ def test_sync_waits_for_dataset_build(window, tmp_path, qapp, monkeypatch):
     assert "c.png" not in list_paths(window)
     monkeypatch.undo()
     assert window.sync_images_folder() and "c.png" in list_paths(window)
+
+
+def test_removed_image_leaves_its_group(tmp_path):
+    p = make_project(tmp_path)
+    p.config.source_groups = {"b.png": "a.png"}
+    (p.images_dir / "a.png").unlink()
+    p.sync_images_dir()
+    assert p.config.source_groups == {}

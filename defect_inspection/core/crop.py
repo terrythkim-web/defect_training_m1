@@ -40,6 +40,7 @@ from defect_inspection.core.dataset import (
     _write_image,
     select_images,
     split_images,
+    val_warnings,
     write_data_yaml,
 )
 from defect_inspection.core.imaging import to_training_8bit
@@ -245,6 +246,7 @@ class CropBuildReport:
     skipped_unlabeled: list[str] = field(default_factory=list)
     skipped_unreadable: list[str] = field(default_factory=list)
     no_windows: list[str] = field(default_factory=list)  # images that produced no crop
+    warnings: list[str] = field(default_factory=list)  # dataset.val_warnings
     elapsed_s: float = 0.0
 
     @property
@@ -281,7 +283,8 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
     for sub in ("images/train", "images/val", "labels/train", "labels/val"):
         (work_dir / sub).mkdir(parents=True)
 
-    report = CropBuildReport(out_dir=str(final_dir), skipped_unlabeled=skipped)
+    report = CropBuildReport(out_dir=str(final_dir), skipped_unlabeled=skipped,
+                             warnings=val_warnings(project, split, defect))
     channels = project.channels
     augmenter = Augmenter(aug_cfg, channels=channels, seed=cfg.split.seed) if ccfg.multiplier else None
     defect_paths = {e.path for e in defect}

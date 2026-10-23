@@ -702,7 +702,7 @@ class AugmentPanel(QWidget):
             lines.append(self.tr("제외(미라벨·제안만): {0}").format(", ".join(r.skipped_unlabeled)))
         if r.skipped_unreadable:
             lines.append(self.tr("제외(읽기 실패·크기 불일치): {0}").format(", ".join(r.skipped_unreadable)))
-        return lines
+        return lines + [f"⚠ {w}" for w in r.warnings]
 
     def _full_report_lines(self, report: BuildReport) -> list[str]:
         lines = [self.tr("완료 ({0:.1f}초): Train {1}장 (원본 {2} + 증강 {3}), Val {4}장").format(
@@ -717,7 +717,7 @@ class AugmentPanel(QWidget):
             lines.append(self.tr("제외(미라벨·제안만): {0}").format(", ".join(report.skipped_unlabeled)))
         if report.skipped_unreadable:
             lines.append(self.tr("제외(읽기 실패·크기 불일치): {0}").format(", ".join(report.skipped_unreadable)))
-        return lines
+        return lines + [f"⚠ {w}" for w in report.warnings]
 
     def _on_build_failed(self, message: str) -> None:
         self._building = False

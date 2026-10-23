@@ -56,6 +56,7 @@ class BuildReport:
     dropped_labels: int = 0  # labels removed by the F3.6 rule during augmentation
     skipped_unlabeled: list[str] = field(default_factory=list)
     skipped_unreadable: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)  # val_warnings: why metrics may mislead
     elapsed_s: float = 0.0
 
     @property
@@ -79,12 +80,78 @@ def select_images(project: Project) -> tuple[list[ImageEntry], list[ImageEntry],
     return defect, ok, skipped
 
 
+def split_units(project: Project, entries: list[ImageEntry]) -> dict[str, list[ImageEntry]]:
+    """Split units: an image on its own, or all images cut from one source image
+    (project.config.source_groups, found by core/image_groups), keyed by the source path."""
+    groups = project.config.source_groups
+    units: dict[str, list[ImageEntry]] = {}
+    for entry in entries:
+        units.setdefault(groups.get(entry.path, entry.path), []).append(entry)
+    return units
+
+
 def split_images(project: Project, defect: list[ImageEntry], ok: list[ImageEntry]) -> dict[str, Split]:
-    """Stratified split: defect and OK images each follow the project's ratio, seed and manual
-    overrides, so Val is never only OK images."""
-    result = compute_split(defect, project.config.split)
-    result.update(compute_split(ok, project.config.split))
-    return result
+    """Stratified split: defect and OK units each follow the project's ratio, seed and manual
+    overrides, so Val is never only OK images. A unit is a group of images cut from the same
+    source (a defect in a slice must not be in Train while the full photo is in Val); a group
+    with any defect image counts as a defect unit, and the first manual split of a member
+    applies to the whole group. Without groups every image is its own unit (same result as
+    splitting the images directly)."""
+    defect_paths = {e.path for e in defect}
+    defect_units, ok_units = [], []
+    units = split_units(project, defect + ok)
+    for key, members in units.items():
+        manual = next((m.split for m in members if m.split != "auto"), "auto")
+        unit = ImageEntry(path=key, split=manual)
+        (defect_units if any(m.path in defect_paths for m in members) else ok_units).append(unit)
+    unit_split = compute_split(defect_units, project.config.split)
+    unit_split.update(compute_split(ok_units, project.config.split))
+    return {m.path: unit_split[key] for key, members in units.items() for m in members}
+
+
+VAL_MIN_DEFECTS = 10  # below this one missed defect moves recall by > 10 %p
+MIN_UNIQUE_PER_CLASS = 10
+
+
+def val_warnings(project: Project, split: dict[str, Split], defect: list[ImageEntry]) -> list[str]:
+    """Why the Val metrics of a dataset may mislead, counted on the original images' labels
+    (not crops; a defect seen in several crops is one defect). Images cut from one source count
+    once: per group and class the largest member count."""
+    names = [c.name for c in project.config.classes]
+    counts = {"train": [0] * len(names), "val": [0] * len(names)}
+    for key, members in split_units(project, defect).items():
+        per_class = [0] * len(names)
+        for m in members:
+            member = [0] * len(names)
+            for shape in project.load_labels(m).confirmed():
+                if 0 <= shape.class_id < len(names):
+                    member[shape.class_id] += 1
+            per_class = [max(a, b) for a, b in zip(per_class, member)]
+        side = split[members[0].path]
+        counts[side] = [a + b for a, b in zip(counts[side], per_class)]
+    grouped = sum(1 for member in project.config.source_groups if member in split)  # defect + OK images
+    warnings = []
+    for i, name in enumerate(names):
+        if counts["train"][i] + counts["val"][i] == 0:
+            continue  # class without labels: nothing to say about its metrics
+        if counts["val"][i] == 0:
+            warnings.append(f"Val에 '{name}' 결함이 없습니다. 이 클래스의 성능은 측정되지 않습니다 "
+                            "(라벨된 이미지를 늘리거나 이미지를 Val로 지정하세요).")
+        if counts["train"][i] == 0:
+            warnings.append(f"Train에 '{name}' 결함이 없습니다. 이 클래스는 학습되지 않습니다.")
+    n_val = sum(counts["val"])
+    if 0 < n_val < VAL_MIN_DEFECTS:
+        warnings.append(f"Val 결함이 {n_val}개뿐입니다. 결함 1개 차이로 recall이 약 {100 / n_val:.0f}%p 바뀌므로 "
+                        "mAP·recall 숫자를 믿기 어렵습니다. Result 탭에서 이미지를 직접 확인하세요.")
+    totals = [t + v for t, v in zip(counts["train"], counts["val"])]
+    few = [f"{name} {n}" for name, n in zip(names, totals) if 0 < n < MIN_UNIQUE_PER_CLASS]
+    if few:
+        warnings.append(f"서로 다른 결함 수가 적습니다: {', '.join(few)} (클래스당 20개 이상 권장). "
+                        "증강은 실제 결함 수를 대신하지 못합니다.")
+    if grouped:
+        warnings.append(f"같은 원본에서 잘라낸 이미지 {grouped}장을 원본과 같은 쪽(Train/Val)에 두었습니다. "
+                        "같은 결함이 두 번 학습되므로 원본이나 조각 중 한 종류만 쓰는 것을 권장합니다.")
+    return warnings
 
 
 # ---- Copy-Paste (F3.3) ------------------------------------------------------------------
@@ -206,7 +273,8 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
     for sub in ("images/train", "images/val", "labels/train", "labels/val"):
         (work_dir / sub).mkdir(parents=True)
 
-    report = BuildReport(out_dir=str(final_dir), skipped_unlabeled=skipped)
+    report = BuildReport(out_dir=str(final_dir), skipped_unlabeled=skipped,
+                         warnings=val_warnings(project, split, defect))
     channels, aug_cfg = project.channels, cfg.augment
     entries = defect + ok
     total = len(entries) * (1 + aug_cfg.multiplier) + len(defect)  # + patch extraction pass
