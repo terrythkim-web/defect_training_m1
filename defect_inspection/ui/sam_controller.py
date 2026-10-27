@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from defect_inspection.core.sam_assist import SamAssistant, SamPrompt
+from defect_inspection.core.sam_assist import SAM_WINDOW, SamAssistant, SamPrompt
 
 
 class SamController(QObject):
@@ -55,19 +55,24 @@ class SamController(QObject):
         except RuntimeError:  # controller destroyed while working
             pass
 
-    def _ensure(self, assistant: SamAssistant, image8: np.ndarray, key: str) -> None:
+    def _load(self, assistant: SamAssistant) -> None:
         if not assistant.is_loaded:
             self._emit(self.status, self.tr("SAM 모델 불러오는 중… (처음 한 번은 다운로드)"))
             assistant.load()
-        if assistant._image_key != key:
-            self._emit(self.status, self.tr("SAM 이미지 분석 중…"))
-            assistant.set_image(image8, key)
-            self._emit(self.ready, key)
 
     def _run_prepare(self, assistant: SamAssistant, image8: np.ndarray, key: str) -> None:
         try:
-            self._ensure(assistant, image8, key)
-            self._emit(self.status, self.tr("SAM 준비 완료: 클릭(포함) / 우클릭(제외) / 드래그(박스)"))
+            self._load(assistant)
+            h, w = image8.shape[:2]
+            if max(w, h) <= SAM_WINDOW:  # one window covers the image: encode it before the first click
+                self._emit(self.status, self.tr("SAM 이미지 분석 중…"))
+                assistant.prepare(image8, key)
+                self._emit(self.ready, key)
+                self._emit(self.status, self.tr("SAM 준비 완료: 클릭(포함) / 우클릭(제외) / 드래그(박스)"))
+            else:  # large image: each click is analysed in a native-resolution window around it
+                self._emit(self.status, self.tr(
+                    "SAM 준비 완료: 클릭한 주변 {0}px 영역을 원래 해상도로 분석합니다 (영역마다 처음 클릭은 조금 걸림)")
+                    .format(SAM_WINDOW))
         except Exception as e:  # noqa: BLE001 - reported to the user
             self._emit(self.failed, 0, str(e))
 
@@ -77,8 +82,10 @@ class SamController(QObject):
             if generation != self._latest:
                 return  # superseded before it started
         try:
-            self._ensure(assistant, image8, key)
-            result = assistant.predict(prompt)
+            self._load(assistant)
+            if assistant.needs_encoding(image8, key, prompt):
+                self._emit(self.status, self.tr("SAM 영역 분석 중…"))
+            result = assistant.predict_tiled(image8, key, prompt)
         except Exception as e:  # noqa: BLE001 - reported to the user
             self._emit(self.failed, generation, str(e))
             return

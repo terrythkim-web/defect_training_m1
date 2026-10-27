@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "defect-inspection"
-version = "0.1.1"
+version = "0.1.2"
 description = "DefectLab: defect labeling, augmentation, YOLO11 training and ONNX export"
 readme = "README.md"
 requires-python = ">=3.10"

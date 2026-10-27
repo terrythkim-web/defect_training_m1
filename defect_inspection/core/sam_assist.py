@@ -1,7 +1,14 @@
 """SAM click assist (PRD F2.8 ②): point/box prompts -> SAM mask -> polygon or box suggestion.
 
 Qt-free. Heavy imports (torch / ultralytics) happen lazily on first use, and the image
-embedding is cached so extra clicks on the same image only run the light mask decoder.
+embedding is cached so extra clicks on the same area only run the light mask decoder.
+
+Tiled SAM: SAM encodes a 1024×1024 input, so a whole 3072×1024 photo was shrunk 3× and a 24 px
+wide crack became 8 px. Images larger than SAM_WINDOW are therefore cut to a window of that size
+around the prompt (`sam_window`), at native resolution. Windows snap to a WINDOW_GRID grid so
+clicks close together reuse one embedding; a prompt (box) larger than the window gets a larger
+window (SAM then downscales it). If the mask is cut by a window border that is not an image
+border, the window is grown around the mask once and SAM runs again.
 """
 
 from __future__ import annotations
@@ -111,6 +118,69 @@ def mask_to_shape(mask: np.ndarray, task: TaskMode, class_id: int, score: float 
         return None
 
 
+# ---- tiled SAM window ----------------------------------------------------------------
+
+SAM_WINDOW = 1024  # SAM's input size: a window this large keeps native resolution
+WINDOW_MARGIN = 64  # context kept around the prompt
+WINDOW_GRID = 256  # window origins snap to this grid, so nearby clicks share an embedding
+
+Window = tuple[int, int, int, int]  # x0, y0, x1, y1 in image pixels
+
+
+def prompt_bounds(prompt: SamPrompt) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in prompt.points]
+    ys = [p[1] for p in prompt.points]
+    if prompt.box is not None:
+        xs += [prompt.box[0], prompt.box[2]]
+        ys += [prompt.box[1], prompt.box[3]]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _axis_window(lo: float, hi: float, extent: int, size: int, margin: int, grid: int) -> tuple[int, int]:
+    if extent <= size:
+        return 0, extent
+    lo, hi = max(0, int(np.floor(lo - margin))), min(extent, int(np.ceil(hi + margin)))
+    if hi - lo >= size:
+        return lo, hi  # prompt larger than a window: cover it (SAM downscales)
+    start = int(round(((lo + hi) / 2 - size / 2) / grid)) * grid
+    start = min(max(start, hi - size, 0), lo, extent - size)  # contains [lo, hi], inside the image
+    return start, start + size
+
+
+def sam_window(bounds: tuple[float, float, float, float], width: int, height: int,
+               size: int = SAM_WINDOW, margin: int = WINDOW_MARGIN, grid: int = WINDOW_GRID) -> Window:
+    """Image window SAM runs on for a prompt with these bounds: the whole image if it fits,
+    else a size×size window around the prompt (larger only if the prompt itself is)."""
+    x0, x1 = _axis_window(bounds[0], bounds[2], width, size, margin, grid)
+    y0, y1 = _axis_window(bounds[1], bounds[3], height, size, margin, grid)
+    return x0, y0, x1, y1
+
+
+def _grown_window(mask: np.ndarray, window: Window, prompt: SamPrompt, width: int, height: int) -> Window | None:
+    """A window that also covers the mask if it is cut by a window border inside the image."""
+    region = largest_component(mask)
+    if region is None:
+        return None
+    x0, y0, x1, y1 = window
+    ys, xs = np.nonzero(region)
+    h, w = mask.shape
+    left, top = xs.min() == 0 and x0 > 0, ys.min() == 0 and y0 > 0
+    right, bottom = xs.max() == w - 1 and x1 < width, ys.max() == h - 1 and y1 < height
+    if not (left or top or right or bottom):
+        return None
+    # the object goes on past a cut border: look one more window further on that side
+    px0, py0, px1, py1 = prompt_bounds(prompt)
+    bounds = (min(px0, x0 + xs.min() - SAM_WINDOW * left), min(py0, y0 + ys.min() - SAM_WINDOW * top),
+              max(px1, x0 + xs.max() + 1 + SAM_WINDOW * right), max(py1, y0 + ys.max() + 1 + SAM_WINDOW * bottom))
+    grown = sam_window(bounds, width, height)
+    return grown if grown != window else None
+
+
+def shift_prompt(prompt: SamPrompt, dx: float, dy: float) -> SamPrompt:
+    box = None if prompt.box is None else (prompt.box[0] + dx, prompt.box[1] + dy, prompt.box[2] + dx, prompt.box[3] + dy)
+    return SamPrompt([(x + dx, y + dy) for x, y in prompt.points], list(prompt.labels), box)
+
+
 # ---- model ---------------------------------------------------------------------------
 
 class SamAssistant:
@@ -167,3 +237,46 @@ class SamAssistant:
         mask = r.masks.data[0].cpu().numpy().astype(bool)
         score = float(r.boxes.conf[0]) if r.boxes is not None and len(r.boxes.conf) else None
         return mask, score
+
+    @staticmethod
+    def window_key(key: str, window: Window) -> str:
+        return f"{key}#{window[0]},{window[1]},{window[2]},{window[3]}"
+
+    def prepare(self, image8: np.ndarray, key: str) -> bool:
+        """Encode ahead of the first click when one window covers the whole image (a larger
+        image is encoded per click window). Returns True if it encoded something."""
+        h, w = image8.shape[:2]
+        if w > SAM_WINDOW or h > SAM_WINDOW:
+            self.load()
+            return False
+        self.set_image(image8, self.window_key(key, (0, 0, w, h)))
+        return True
+
+    def needs_encoding(self, image8: np.ndarray, key: str, prompt: SamPrompt) -> bool:
+        h, w = image8.shape[:2]
+        return self.window_key(key, sam_window(prompt_bounds(prompt), w, h)) != self._image_key
+
+    def predict_tiled(self, image8: np.ndarray, key: str, prompt: SamPrompt) -> tuple[np.ndarray, float | None] | None:
+        """(boolean mask at image size, score): SAM on the native-resolution window around the
+        prompt (the whole image when it is no larger than SAM_WINDOW)."""
+        if prompt.is_empty:
+            return None
+        h, w = image8.shape[:2]
+        window = sam_window(prompt_bounds(prompt), w, h)
+        best: tuple[tuple[np.ndarray, float | None], Window] | None = None
+        for _ in range(2):  # the first window, then once more if the mask was cut by its border
+            x0, y0, x1, y1 = window
+            self.set_image(np.ascontiguousarray(image8[y0:y1, x0:x1]), self.window_key(key, window))
+            result = self.predict(shift_prompt(prompt, -x0, -y0))
+            if result is None:
+                break
+            best = (result, window)
+            window = _grown_window(result[0], window, prompt, w, h)
+            if window is None:
+                break
+        if best is None:
+            return None
+        (mask, score), (x0, y0, x1, y1) = best
+        full = np.zeros((h, w), bool)
+        full[y0:y1, x0:x1] = mask[:y1 - y0, :x1 - x0]
+        return full, score
