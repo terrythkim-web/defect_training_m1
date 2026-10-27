@@ -1,0 +1,8 @@
+# Keep LF in the repository and in Linux containers even when the repo is checked out on Windows
+# (CRLF breaks shell scripts and the Dockerfile inside the container).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pptx binary
+*.pdf binary

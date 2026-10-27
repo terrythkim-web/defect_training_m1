@@ -48,3 +48,20 @@ jobs:
 
       - name: Self-check (imports, model YAMLs, ONNX Runtime, Korean font, main window)
         run: python -m defect_inspection.app --self-check
+
+  docker:
+    # The development container of docs/docker_dev.md (CPU variant): image builds, tests pass inside.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check compose file
+        run: docker compose config -q
+
+      - name: Build dev-cpu image
+        run: docker compose build dev-cpu
+
+      - name: Tests and self-check inside the container
+        run: >
+          docker run --rm -v "$PWD:/workspace" -e QT_QPA_PLATFORM=offscreen defectlab-dev:cpu
+          bash -c "python -m pytest -q -p no:cacheprovider && python -m defect_inspection.app --self-check"

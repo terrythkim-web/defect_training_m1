@@ -11,6 +11,8 @@ dist/
 *.pt
 *.onnx
 runs/
+# Docker dev container: default mount for DefectLab projects (compose.yaml)
+projects/
 
 # macOS
 .DS_Store

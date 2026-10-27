@@ -1,0 +1,57 @@
+# DefectLab development containers (docs/docker_dev.md).
+#   docker compose build dev && docker compose run --rm dev          NVIDIA GPU (CUDA PyTorch)
+#   docker compose build dev-cpu && docker compose run --rm dev-cpu  CPU only
+#
+# Environment (optional, e.g. in a .env file next to this one):
+#   DEFECTLAB_PROJECTS  host folder with your DefectLab projects, mounted at /projects (default ./projects)
+#   WSLG_ROOT           WSLg folder on the Docker host: /run/desktop/mnt/host/wslg for Docker Desktop
+#                       (default), /mnt/wslg for Docker Engine installed inside a WSL distro
+#   TORCH_INDEX_CUDA    PyTorch wheel index for `dev` (default cu128; see pytorch.org for others)
+
+x-dev: &dev
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+    - defectlab-cache:/home/dev/.cache          # model weights, thumbnails (survive rebuilds)
+    - ${DEFECTLAB_PROJECTS:-./projects}:/projects
+    # WSLg: the app window appears on the Windows desktop
+    - ${WSLG_ROOT:-/run/desktop/mnt/host/wslg}/.X11-unix:/tmp/.X11-unix
+    - ${WSLG_ROOT:-/run/desktop/mnt/host/wslg}:/mnt/wslg
+  environment:
+    DISPLAY: ":0"
+    WAYLAND_DISPLAY: wayland-0
+    XDG_RUNTIME_DIR: /mnt/wslg/runtime-dir
+    PULSE_SERVER: /mnt/wslg/PulseServer
+    QT_QPA_PLATFORM: xcb
+  shm_size: 4gb                                 # PyTorch DataLoader workers share memory
+  stdin_open: true
+  tty: true
+
+services:
+  dev:
+    <<: *dev
+    image: defectlab-dev:cuda
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        TORCH_INDEX: ${TORCH_INDEX_CUDA:-https://download.pytorch.org/whl/cu128}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  dev-cpu:
+    <<: *dev
+    image: defectlab-dev:cpu
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cpu
+
+volumes:
+  defectlab-cache:

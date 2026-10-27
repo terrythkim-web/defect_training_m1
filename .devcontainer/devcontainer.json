@@ -1,0 +1,19 @@
+{
+  // VS Code "Dev Containers: Reopen in Container" (docs/docker_dev.md).
+  // "dev" uses the NVIDIA GPU; without one change "service" to "dev-cpu".
+  "name": "DefectLab",
+  "dockerComposeFile": ["../compose.yaml"],
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "dev",
+  "shutdownAction": "stopCompose",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "anthropic.claude-code"],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
+        "python.testing.pytestEnabled": true
+      }
+    }
+  }
+}

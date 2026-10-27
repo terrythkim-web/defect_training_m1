@@ -10,6 +10,8 @@
 PyTorch는 OS와 GPU에 맞는 빌드를 **먼저** 설치한 뒤 앱을 설치합니다.
 CUDA 버전별 명령은 [pytorch.org](https://pytorch.org/get-started/locally/)에서 확인하세요 (아래 `cu128`은 예시).
 
+**Docker(Windows WSL2 / Linux)로 개발하기**: `docker compose build dev && docker compose run --rm dev` — 자세한 방법은 [docs/docker_dev.md](docs/docker_dev.md).
+
 ### Linux
 
 ```bash
@@ -165,7 +167,7 @@ OS마다 그 OS에서 빌드합니다 (크로스 빌드 불가). 앱과 같은 �
 | 준비 | `pip install -e ".[package]"` | `pip install -e ".[package]"` | `pip install -e ".[package]"` |
 | 빌드 | `packaging/build_linux.sh` | `powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1` | `packaging/build_mac.sh` |
 | spec | `packaging/defectlab_linux.spec` | `packaging/defectlab_windows.spec` | `packaging/defectlab_mac.spec` |
-| 결과 | `dist/DefectLab/DefectLab` + `dist/DefectLab-linux-<arch>.tar.gz` | `dist\DefectLab\DefectLab.exe` + `DefectLab-worker.exe` + `dist\DefectLab-windows-x64.zip` | `dist/DefectLab-<버전>.app` + `dist/DefectLab-<버전>-macos-arm64.dmg` (빌드 전 `tools/bump_version.py`로 버전 올림) |
+| 결과 | `dist/DefectLab/DefectLab` + `dist/DefectLab-<버전>-linux-<arch>.tar.gz` | `dist\DefectLab\DefectLab.exe` + `DefectLab-worker.exe` + `dist\DefectLab-windows-x64.zip` | `dist/DefectLab-<버전>.app` + `dist/DefectLab-<버전>-macos-arm64.dmg` (빌드 전 `tools/bump_version.py`로 버전 올림) |
 
 - 빌드 스크립트는 끝에 설치본의 `--self-check`를 실행해 빠진 파일이 없는지 확인합니다.
 - Windows 설치본은 창 앱 `DefectLab.exe`와 학습용 콘솔 프로그램 `DefectLab-worker.exe` 두 개로 되어 있습니다

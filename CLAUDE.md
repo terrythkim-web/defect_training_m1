@@ -80,6 +80,10 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 - Training worker: QProcess runs `sys.executable -m defect_inspection.worker`; every entry point needs an `if __name__ == "__main__":` guard (Windows spawn). Stop = graceful signal, then `kill()` on timeout. Keep DataLoader workers low on Windows.
 - CI runs pytest + `--self-check` on `ubuntu-latest`, `windows-latest` and `macos-14` (Apple Silicon; its virtual MPS fails the `_mps_works` probe → CPU only) with `QT_QPA_PLATFORM=offscreen`. The test suite and `docs/mac_checklist.md` were run on a real M1 (results in `docs/mac_checklist_tested.md`).
 
+## Docker development (Windows / Linux)
+
+`docker/Dockerfile` + `compose.yaml` (services `dev` = CUDA PyTorch with the NVIDIA GPU, `dev-cpu`) + `.devcontainer/` — guide `docs/docker_dev.md`. The image holds `/opt/venv` with the package installed editable from `/workspace`; compose bind-mounts the repo over `/workspace` (code edits need no rebuild, dependency changes do), the `defectlab-cache` volume at `~/.cache`, `${DEFECTLAB_PROJECTS:-./projects}` at `/projects`, and WSLg (`${WSLG_ROOT}`) so the app window shows on the Windows desktop (`QT_QPA_PLATFORM=xcb`). User `dev` (uid 1000). `.gitattributes` forces LF. CI job `docker` builds `dev-cpu` and runs pytest + `--self-check` inside it. In the container: `python -m pytest`, `packaging/build_linux.sh` (defaults to `python` when there is no `.venv`, outputs `DefectLab-<version>-linux-<arch>.tar.gz`).
+
 ## User project layout (data the app reads/writes)
 
 `project.yaml`, `images/`, `labels/`, `crops.json`, `dataset/{full,crop}/`, `runs/<run_id>/`, `exports/`, `reports/`.

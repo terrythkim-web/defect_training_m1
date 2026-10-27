@@ -1,0 +1,14 @@
+# Only pyproject.toml, README.md and defect_inspection/ are copied into the image; keep the
+# build context small (the source itself is bind-mounted at run time).
+.git
+.venv
+build
+dist
+projects
+**/__pycache__
+**/*.egg-info
+.pytest_cache
+*.pt
+*.onnx
+runs
+.DS_Store
