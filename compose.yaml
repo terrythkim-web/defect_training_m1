@@ -10,9 +10,12 @@
 
 x-dev: &dev
   working_dir: /workspace
+  # seeds Claude Code's memory from docker/claude-memory on the first start, then runs the command
+  entrypoint: ["bash", "/workspace/docker/entrypoint.sh"]
   volumes:
     - .:/workspace
     - defectlab-cache:/home/dev/.cache          # model weights, thumbnails (survive rebuilds)
+    - claude-home:/home/dev/.claude             # Claude Code login, settings, memory
     - ${DEFECTLAB_PROJECTS:-./projects}:/projects
     # WSLg: the app window appears on the Windows desktop
     - ${WSLG_ROOT:-/run/desktop/mnt/host/wslg}/.X11-unix:/tmp/.X11-unix
@@ -23,6 +26,7 @@ x-dev: &dev
     XDG_RUNTIME_DIR: /mnt/wslg/runtime-dir
     PULSE_SERVER: /mnt/wslg/PulseServer
     QT_QPA_PLATFORM: xcb
+    CLAUDE_CONFIG_DIR: /home/dev/.claude        # keep all Claude Code state in the claude-home volume
   shm_size: 4gb                                 # PyTorch DataLoader workers share memory
   stdin_open: true
   tty: true
@@ -55,3 +59,4 @@ services:
 
 volumes:
   defectlab-cache:
+  claude-home:

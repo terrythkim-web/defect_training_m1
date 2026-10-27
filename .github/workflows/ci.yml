@@ -61,6 +61,11 @@ jobs:
       - name: Build dev-cpu image
         run: docker compose build dev-cpu
 
+      - name: Claude Code memory is seeded on the first start
+        run: >
+          docker compose run --rm -T dev-cpu
+          bash -c 'ls "$CLAUDE_CONFIG_DIR/projects/-workspace/memory/MEMORY.md" && claude --version'
+
       - name: Tests and self-check inside the container
         run: >
           docker run --rm -v "$PWD:/workspace" -e QT_QPA_PLATFORM=offscreen defectlab-dev:cpu

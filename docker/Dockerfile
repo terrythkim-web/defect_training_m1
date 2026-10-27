@@ -37,7 +37,8 @@ RUN groupadd --gid "$USER_GID" dev \
     && useradd --uid "$USER_UID" --gid "$USER_GID" --create-home --shell /bin/bash dev \
     && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
     && python -m venv /opt/venv && chown -R dev:dev /opt/venv \
-    && mkdir -p /workspace /projects /home/dev/.cache && chown dev:dev /workspace /projects /home/dev/.cache
+    && mkdir -p /workspace /projects /home/dev/.cache /home/dev/.claude \
+    && chown dev:dev /workspace /projects /home/dev/.cache /home/dev/.claude
 
 # Claude Code CLI (`claude`), to continue development inside the container.
 RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then npm install -g @anthropic-ai/claude-code; fi

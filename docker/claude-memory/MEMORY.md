@@ -1,0 +1,1 @@
+- [Versioned app builds](versioned-app-builds.md) — bump version before each build, versioned dist names, ask before deleting old builds

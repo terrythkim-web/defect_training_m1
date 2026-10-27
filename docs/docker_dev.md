@@ -9,6 +9,7 @@ Claude Code CLI가 들어 있습니다. 소스 폴더는 컨테이너에 연결(
 | `docker/Dockerfile` | 개발 이미지 (`/opt/venv`에 패키지를 편집 모드로 설치) |
 | `compose.yaml` | `dev`(NVIDIA GPU)와 `dev-cpu` 두 서비스, 소스·캐시·프로젝트 폴더 연결, WSLg 화면 연결 |
 | `.devcontainer/devcontainer.json` | VS Code "Reopen in Container"용 |
+| `docker/entrypoint.sh`, `docker/claude-memory/` | 처음 시작할 때 Mac에서 쓰던 Claude Code 메모리를 컨테이너에 넣음 |
 | `.gitattributes` | Windows에서 받아도 줄바꿈을 LF로 유지 (CRLF면 셸 스크립트가 컨테이너에서 깨짐) |
 
 ## 1. 준비 (한 번만)
@@ -58,6 +59,11 @@ claude                                              # Claude Code로 이어 개�
 - **프로젝트 데이터**: 저장소의 `projects/` 폴더(git에서 제외됨)가 컨테이너의 `/projects`에 연결됩니다.
   다른 폴더를 쓰려면 저장소 폴더에 `.env` 파일을 만들고 `DEFECTLAB_PROJECTS=/home/<이름>/defect-projects`처럼 적습니다.
   Mac에서 쓰던 프로젝트 폴더를 그대로 복사해 오면 됩니다. 경로는 프로젝트 기준 상대 경로라 OS가 바뀌어도 열립니다.
+- **Claude Code**: 로그인 정보·설정·메모리는 Docker 볼륨 `claude-home`에 저장되어 컨테이너를 다시 띄워도 남습니다.
+  처음 시작할 때 `docker/claude-memory/`의 메모리(Mac에서 정한 작업 규칙, 예: 빌드마다 버전 올리기)가
+  `~/.claude/projects/-workspace/memory/`에 들어가므로, 컨테이너 안의 `claude`도 같은 규칙을 따릅니다.
+  이미 메모리가 있으면 덮어쓰지 않습니다. 다시 넣으려면 `docker volume rm defect-inspection_claude-home`
+  (로그인도 지워짐) 뒤에 다시 시작하거나, 파일을 직접 복사합니다.
 - **모델 가중치·썸네일 캐시**: Docker 볼륨 `defectlab-cache`에 저장됩니다. 이미지를 다시 만들어도 남습니다.
 - **의존성을 바꿨을 때**(`pyproject.toml`): `docker compose build dev`로 이미지를 다시 만듭니다. 코드만 바꿨을 때는 필요 없습니다.
 
