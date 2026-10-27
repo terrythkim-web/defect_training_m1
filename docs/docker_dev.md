@@ -31,8 +31,9 @@ WSL 홈 폴더에 둡니다.
 git clone https://github.com/terrythkim-web/defect_training_m1.git ~/defect-inspection
 
 # 또는 받은 압축 파일에서 (git 이력 포함)
-unzip /mnt/c/Users/<이름>/Downloads/DefectLab-dev-<버전>.zip -d ~/defect-inspection
+unzip /mnt/c/Users/<이름>/Downloads/DefectLab-dev-<버전>.zip -d ~    # → ~/defect-inspection
 cd ~/defect-inspection
+git pull                                     # 압축 이후의 변경 받기 (origin = GitHub)
 ```
 
 ## 3. 이미지 만들기와 실행
