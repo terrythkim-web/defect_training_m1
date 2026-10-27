@@ -208,7 +208,8 @@ def test_build_from_ui(panel, window, qapp):
     assert "완료" in panel.build_status.text() and "제외" in panel.build_status.text()  # img4 unlabeled
     assert (window.project.dataset_dir / "full" / "data.yaml").is_file()
     assert window.project.label_status("img0.png").confirmed == 2  # saved before building
-    assert panel.btn_build.isEnabled()
+    # is_building clears before build_finished; the button returns when the thread is cleaned up
+    assert wait_until(qapp, panel.btn_build.isEnabled)
 
 
 def test_build_cancel(panel, window, qapp):
