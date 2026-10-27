@@ -14,7 +14,8 @@ Measures on the same data:
 
 Decision rule (PRD 5.2): plan an MLX training engine only if the MLX step is >= 1.5x faster than
 the MPS step. Anything missing on this machine (no MPS on Linux, no CoreML outside macOS) is
-reported as "-", and the decision is then "판단 불가".
+reported as "-", and the decision is then "판단 불가". Section 3 is skipped (with the reason) when
+MLX or MPS is missing, since no decision is possible without both.
 """
 
 from __future__ import annotations
@@ -163,17 +164,29 @@ def mlx_step_ms(batch: int, imgsz: int, steps: int, compiled: bool = False) -> f
     return _median_ms(step, steps)
 
 
-def bench_step(batch: int, imgsz: int, steps: int) -> dict:
-    """ms per training step for every available backend."""
-    out: dict = {"batch": batch, "imgsz": imgsz}
-    for device in torch_devices():
-        out[f"torch_{device}"] = round(torch_step_ms(device, batch, imgsz, steps), 1)
+def step_skip_reason() -> str | None:
+    """Why section 3 cannot decide anything on this machine, or None to run it. Without MPS the
+    decision is impossible anyway, and the MLX CPU build took over 20 min at 640px on Linux."""
     try:
         import mlx.core  # noqa: F401
     except ImportError:
+        return 'MLX가 설치되어 있지 않습니다 (pip install -e ".[bench]")'
+    if "mps" not in torch_devices():
+        return "이 PC에 MPS가 없습니다 (Apple Silicon Mac에서 실행하세요)"
+    return None
+
+
+def bench_step(batch: int, imgsz: int, steps: int) -> dict:
+    """ms per training step for every available backend."""
+    out: dict = {"batch": batch, "imgsz": imgsz}
+    try:
+        import mlx.core  # noqa: F401
+    except ImportError:  # checked first: the PyTorch step uses the surrogate loss in mlx_yolo, which imports MLX
         out["mlx"] = None
         out["mlx_compiled"] = None
         return out
+    for device in torch_devices():
+        out[f"torch_{device}"] = round(torch_step_ms(device, batch, imgsz, steps), 1)
     out["mlx"] = round(mlx_step_ms(batch, imgsz, steps), 1)
     out["mlx_compiled"] = round(mlx_step_ms(batch, imgsz, steps, compiled=True), 1)
     return out
@@ -181,6 +194,8 @@ def bench_step(batch: int, imgsz: int, steps: int) -> dict:
 
 def decide(step: dict, threshold: float = MLX_THRESHOLD) -> tuple[str, float | None]:
     """(decision text, MPS/MLX speed ratio). Ratio > 1 means MLX is faster."""
+    if step.get("skipped"):
+        return f"판단 불가: {step['skipped']}", None
     mps = step.get("torch_mps")
     mlx_times = [v for v in (step.get("mlx"), step.get("mlx_compiled")) if v]
     if not mps or not mlx_times:
@@ -330,8 +345,11 @@ def format_report(result: dict) -> str:
             lines.append(f"\nCoreML 오류: {i['coreml_error']}")
         lines.append("")
     s = result["step"]
-    lines += [f"## 3. 학습 1 step (forward + backward + SGD, batch {s['batch']}, {s['imgsz']}px)", "",
-              "| 구현 | ms/step |", "| --- | --- |"]
+    lines += [f"## 3. 학습 1 step (forward + backward + SGD, batch {s['batch']}, {s['imgsz']}px)", ""]
+    if s.get("skipped"):
+        lines += [f"생략: {s['skipped']}", "", f"**판단**: {result['decision']}", ""]
+        return "\n".join(lines)
+    lines += ["| 구현 | ms/step |", "| --- | --- |"]
     for k, label in (("torch_cpu", "PyTorch CPU"), ("torch_mps", "PyTorch MPS"), ("torch_cuda", "PyTorch CUDA"),
                      ("mlx", "MLX"), ("mlx_compiled", "MLX (mx.compile)")):
         if k in s:
@@ -361,8 +379,13 @@ def main(argv: list[str] | None = None) -> int:
             print("2/3 추론 측정 중…", flush=True)
             result["infer_imgsz"] = 160 if q else 640
             result["inference"] = bench_inference(result["infer_imgsz"], 5 if q else 30, work)
-        print("3/3 학습 1 step (MLX vs PyTorch) 측정 중…", flush=True)
-        result["step"] = bench_step(**step_cfg)
+        skip = step_skip_reason()
+        if skip:
+            print(f"3/3 학습 1 step (MLX vs PyTorch) 생략: {skip}", flush=True)
+            result["step"] = {"batch": step_cfg["batch"], "imgsz": step_cfg["imgsz"], "skipped": skip}
+        else:
+            print("3/3 학습 1 step (MLX vs PyTorch) 측정 중…", flush=True)
+            result["step"] = bench_step(**step_cfg)
     result["decision"], result["mps_over_mlx"] = decide(result["step"])
     report = format_report(result)
     print("\n" + report)

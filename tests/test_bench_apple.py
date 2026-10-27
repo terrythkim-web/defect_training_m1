@@ -134,3 +134,20 @@ def test_report_format():
     text = B.format_report(result)
     assert "Apple M1" in text and "MPS가 CPU보다 3.00배" in text and "| CoreML .mlpackage | 5.0 |" in text
     assert "1.71배" in text and "계획" in text
+
+
+def test_step_skipped_without_mps(monkeypatch):
+    monkeypatch.setattr(B, "torch_devices", lambda: ["cpu"])
+    reason = B.step_skip_reason()
+    assert reason and "MPS" in reason
+    result = {"environment": {"os": "Linux 6", "machine": "x86_64", "python": "3.12", "torch": "2.5", "mps": False},
+              "step": {"batch": 8, "imgsz": 640, "skipped": reason}}
+    result["decision"], ratio = B.decide(result["step"])
+    assert ratio is None and "판단 불가" in result["decision"] and "MPS" in result["decision"]
+    assert f"생략: {reason}" in B.format_report(result)
+
+
+def test_step_benchmark_without_mlx(monkeypatch):
+    monkeypatch.setitem(sys.modules, "mlx.core", None)  # import mlx.core -> ImportError
+    assert "MLX" in B.step_skip_reason()
+    assert B.bench_step(batch=1, imgsz=64, steps=1) == {"batch": 1, "imgsz": 64, "mlx": None, "mlx_compiled": None}
