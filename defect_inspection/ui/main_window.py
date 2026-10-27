@@ -200,7 +200,14 @@ class MainWindow(QMainWindow):
         for act in (self.act_enter, self.act_backspace, self.act_delete, self.act_escape, self.act_toggle_ok):
             self.addAction(act)
 
-        self._project_actions = [self.act_add_folder, self.act_save, self.act_toggle_ok]
+        # Train/Val by hand and the synthetic mark (image-list right-click, 편집 menu)
+        self.act_split_train = action(self.tr("Train으로 지정"), None, lambda: self.set_current_split("train"))
+        self.act_split_val = action(self.tr("Val로 지정"), None, lambda: self.set_current_split("val"))
+        self.act_split_auto = action(self.tr("Train/Val 자동"), None, lambda: self.set_current_split("auto"))
+        self.act_synthetic = action(self.tr("합성 이미지 (항상 Train)"), None, self.toggle_synthetic)
+        self.act_synthetic.setCheckable(True)
+        self._project_actions = [self.act_add_folder, self.act_save, self.act_toggle_ok, self.act_split_train,
+                                 self.act_split_val, self.act_split_auto, self.act_synthetic]
 
     def _build_toolbar(self) -> None:
         tb = QToolBar(self.tr("도구"), self)
@@ -225,6 +232,9 @@ class MainWindow(QMainWindow):
         self.image_list = self.image_panel.list
         self.image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)  # right-click: OK
         self.image_list.addAction(self.act_toggle_ok)
+        self.image_list.addAction(_separator(self))
+        for act in (self.act_split_train, self.act_split_val, self.act_split_auto, self.act_synthetic):
+            self.image_list.addAction(act)
         self.class_list = QListWidget()
         self.class_list.setObjectName("class_list")
         self.class_list.currentRowChanged.connect(self._on_class_row_changed)
@@ -870,6 +880,9 @@ class MainWindow(QMainWindow):
         edit_menu = bar.addMenu(self.tr("편집"))
         for act in (self.act_undo, self.act_redo, self.act_delete, self.act_toggle_ok):
             edit_menu.addAction(act)
+        edit_menu.addSeparator()
+        for act in (self.act_split_train, self.act_split_val, self.act_split_auto, self.act_synthetic):
+            edit_menu.addAction(act)
         view_menu = bar.addMenu(self.tr("보기"))
         for act in (self.act_fit, self.act_zoom_100, self.act_prev_image, self.act_next_image):
             view_menu.addAction(act)
@@ -1140,9 +1153,50 @@ class MainWindow(QMainWindow):
             self.tr("OK 이미지로 표시했습니다 (배경으로 학습)") if entry.is_ok else self.tr("OK 표시를 해제했습니다"), 3000)
         self._update_status()
 
+    # ---- Train/Val by hand, synthetic images ----------------------------------------------------
+    def _group_of(self, path: str) -> list[str]:
+        """The image and every image cut from the same source (they share one split)."""
+        groups = self.project.config.source_groups
+        key = groups.get(path, path)
+        return [e.path for e in self.project.config.images if groups.get(e.path, e.path) == key]
+
+    def set_current_split(self, split: str) -> None:
+        """Put the current image (and its source group) in Train / Val by hand, or back to auto."""
+        if self.project is None or self.current_image is None:
+            return
+        group = self._group_of(self.current_image)
+        if split == "val" and any(self.project.image(p).synthetic for p in group):
+            self.statusBar().showMessage(
+                self.tr("합성 이미지(또는 합성 이미지와 같은 원본 묶음)는 Val로 지정할 수 없습니다"), 5000)
+            return
+        for path in group:
+            self.project.set_split(path, split)
+        self.mark_dirty()
+        self.image_panel.refresh_marks(group)
+        names = {"train": "Train", "val": "Val", "auto": self.tr("자동")}
+        extra = self.tr(" (같은 원본 묶음 {0}장 함께)").format(len(group) - 1) if len(group) > 1 else ""
+        self.statusBar().showMessage(self.tr("{0}: {1}(으)로 지정했습니다{2}").format(
+            self.current_image, names[split], extra), 5000)
+
+    def toggle_synthetic(self) -> None:
+        """Mark the current image as made by the user (pasted / moved defects): always Train."""
+        if self.project is None or self.current_image is None:
+            return
+        entry = self.project.image(self.current_image)
+        self.project.set_synthetic(entry.path, not entry.synthetic)
+        if entry.synthetic and entry.split == "val":
+            self.project.set_split(entry.path, "auto")  # a synthetic image is never measured on
+        self.mark_dirty()
+        self.act_synthetic.setChecked(entry.synthetic)
+        self.image_panel.refresh_marks([entry.path])
+        self.statusBar().showMessage(
+            self.tr("합성 이미지로 표시했습니다: 같은 원본 묶음과 함께 항상 Train에 들어갑니다") if entry.synthetic
+            else self.tr("합성 이미지 표시를 해제했습니다"), 5000)
+
     def _on_current_image_changed(self, path: str | None) -> None:
         self._close_session()
         self.current_image = path
+        self.act_synthetic.setChecked(bool(path and self.project and self.project.image(path).synthetic))
         self.augment_panel.set_current_image(path)
         if self.project is None or path is None:
             self.canvas.set_image(None)
@@ -1263,6 +1317,12 @@ class ScrollTabs(QTabWidget):
 
     def _page(self, w: QWidget | None) -> QWidget | None:
         return w.widget() if isinstance(w, QScrollArea) and w in self._areas.values() else w
+
+
+def _separator(parent: QWidget) -> QAction:
+    act = QAction(parent)
+    act.setSeparator(True)
+    return act
 
 
 def _titled(title: str, widget: QWidget) -> QWidget:

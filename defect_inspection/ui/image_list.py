@@ -149,10 +149,34 @@ class ImageListPanel(QWidget):
 
     def _set_status(self, item: QListWidgetItem, status: LabelStatus) -> None:
         item.setData(STATUS_ROLE, status)
-        item.setText(f"{item.data(PATH_ROLE)}\n{self.tr(status_text(status))}")
+        item.setText(f"{item.data(PATH_ROLE)}\n{self.tr(status_text(status))}{self._entry_marks(item.data(PATH_ROLE))}")
         # Labeled: clear the role so the palette's text colour applies. setForeground(QColor())
         # painted an invalid (= black) brush, unreadable on the dark-mode list background.
         item.setData(Qt.ItemDataRole.ForegroundRole, None if status.is_labeled else QColor("gray"))
+
+    def _entry_marks(self, path: str) -> str:
+        """Manual Train/Val choice and the synthetic mark, shown after the label status."""
+        if self.project is None:
+            return ""
+        try:
+            entry = self.project.image(path)
+        except KeyError:
+            return ""
+        marks = []
+        if entry.synthetic:
+            marks.append(self.tr("합성"))
+        if entry.split == "train":
+            marks.append(self.tr("Train 지정"))
+        elif entry.split == "val":
+            marks.append(self.tr("Val 지정"))
+        return "".join(f" · {m}" for m in marks)
+
+    def refresh_marks(self, paths: list[str] | None = None) -> None:
+        """Redraw the text of these items (all if None) after a split / synthetic change."""
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if paths is None or item.data(PATH_ROLE) in paths:
+                self._set_status(item, item.data(STATUS_ROLE))
 
     def _on_thumbnail(self, abspath: str, image: QImage) -> None:
         item = self._items_by_abspath.get(abspath)

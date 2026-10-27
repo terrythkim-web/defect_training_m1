@@ -65,10 +65,10 @@ def test_find_can_be_cancelled(tmp_path):
 
 
 def make_project(tmp_path, with_slices=True):
-    """Two wide photos with one defect each, plus (optionally) their slices; one defect in a
+    """Four wide photos with one defect each, plus (optionally) their slices; one defect in a
     slice is labeled again; slices without the defect are OK images."""
     src = tmp_path / "원본"
-    src.mkdir()
+    src.mkdir(parents=True)
     for n in range(4):
         wide = texture(10 + n)
         imwrite_unicode(src / f"wide{n}.png", wide)
@@ -225,3 +225,62 @@ def test_build_waits_for_a_running_check(window, tmp_path, qapp, monkeypatch):
     monkeypatch.setattr(QMessageBox, "show", lambda self: None)
     window._before_build()  # blocks until the check is done, then applies it
     assert len(p.config.source_groups) == 12
+
+
+# ---- synthetic images, Train/Val by hand -----------------------------------------------------
+
+def test_synthetic_unit_always_train_and_not_counted(tmp_path):
+    p = make_project(tmp_path)
+    detect_groups(p)
+    defect, ok, _ = select_images(p)
+    for seed in range(6):  # whatever the seed, the marked image's group stays in Train
+        p.config.split.seed = seed
+        p.set_synthetic("wide1_2.png")
+        split = split_images(p, defect, ok)
+        assert all(split[path] == "train" for path in ["wide1.png"] + [f"wide1_{k}.png" for k in range(6)])
+    text = "\n".join(val_warnings(p, split_images(p, defect, ok), defect))
+    assert "합성 이미지 1장" in text
+    q = make_project(tmp_path / "b", with_slices=False)  # wide0..3: broken, crack, broken, crack
+    q.set_synthetic("wide3.png")
+    defect, ok, _ = select_images(q)
+    text = "\n".join(val_warnings(q, split_images(q, defect, ok), defect))
+    assert "broken 2, crack 1" in text  # wide3's crack is synthetic: only wide1's crack counts
+
+
+def test_window_split_and_synthetic_actions(window, tmp_path, qapp):
+    p = make_project(tmp_path, with_slices=False)
+    window.load_project(p)
+    window.image_panel.select("wide2.png")
+    assert wait_until(qapp, lambda: window.current_image == "wide2.png")
+    assert window.act_split_val in window.image_list.actions() and window.act_synthetic.isCheckable()
+
+    window.act_split_val.trigger()
+    assert p.image("wide2.png").split == "val" and window.project_dirty
+    assert "Val 지정" in window.image_panel._item("wide2.png").text()
+    window.act_split_auto.trigger()
+    assert p.image("wide2.png").split == "auto" and "지정" not in window.image_panel._item("wide2.png").text()
+
+    window.act_split_val.trigger()
+    window.act_synthetic.trigger()
+    e = p.image("wide2.png")
+    assert e.synthetic and e.split == "auto" and window.act_synthetic.isChecked()  # never measured on
+    assert "합성" in window.image_panel._item("wide2.png").text()
+    window.act_split_val.trigger()
+    assert p.image("wide2.png").split == "auto" and "Val로 지정할 수 없습니다" in window.statusBar().currentMessage()
+    window.image_panel.select("wide1.png")
+    assert wait_until(qapp, lambda: window.current_image == "wide1.png") and not window.act_synthetic.isChecked()
+
+
+def test_split_by_hand_moves_the_whole_group(window, tmp_path, qapp, monkeypatch):
+    p = make_project(tmp_path)
+    monkeypatch.setattr(QMessageBox, "show", lambda self: None)
+    window.load_project(p)
+    window._before_build()  # groups known
+    window.image_panel.select("wide0_3.png")
+    assert wait_until(qapp, lambda: window.current_image == "wide0_3.png")
+    window.act_split_train.trigger()
+    assert all(p.image(path).split == "train" for path in ["wide0.png"] + [f"wide0_{k}.png" for k in range(6)])
+    assert "함께" in window.statusBar().currentMessage()
+    project_reloaded = window.project
+    project_reloaded.save()
+    assert Project.open(p.root).image("wide0_5.png").split == "train"

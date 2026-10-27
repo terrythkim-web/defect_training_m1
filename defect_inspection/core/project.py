@@ -79,6 +79,8 @@ class ImageEntry(BaseModel):
     path: str  # relative to images/, POSIX separators so project.yaml is portable across OSes
     split: SplitAssignment = "auto"  # manual override (F1.4)
     is_ok: bool = False  # normal image used as a background/negative sample (F1.5)
+    # made by the user (defects pasted / moved by another tool): always Train, never measured on
+    synthetic: bool = False
 
     @field_validator("path")
     @classmethod
@@ -534,6 +536,9 @@ class Project:
 
     def set_ok(self, path: str, is_ok: bool = True) -> None:
         self.image(path).is_ok = is_ok
+
+    def set_synthetic(self, path: str, synthetic: bool = True) -> None:
+        self.image(path).synthetic = synthetic
 
     def splits(self) -> dict[str, Split]:
         return compute_split(self.config.images, self.config.split)

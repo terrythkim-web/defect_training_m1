@@ -103,15 +103,21 @@ def split_images(project: Project, defect: list[ImageEntry], ok: list[ImageEntry
     source (a defect in a slice must not be in Train while the full photo is in Val); a group
     with any defect image counts as a defect unit, and the first manual split of a member
     applies to the whole group. Without groups every image is its own unit (same result as
-    splitting the images directly)."""
+    splitting the images directly). A unit with a synthetic image (made by the user from real
+    ones) always goes to Train: Val measures real defects only, and the real image it was made
+    from must not sit in Val while its copy trains."""
     defect_paths = {e.path for e in defect}
     defect_units, ok_units = [], []
     units = split_units(project, defect + ok)
+    unit_split: dict[str, Split] = {}
     for key, members in units.items():
+        if any(m.synthetic for m in members):
+            unit_split[key] = "train"
+            continue
         manual = next((m.split for m in members if m.split != "auto"), "auto")
         unit = ImageEntry(path=key, split=manual)
         (defect_units if any(m.path in defect_paths for m in members) else ok_units).append(unit)
-    unit_split = compute_split(defect_units, project.config.split)
+    unit_split.update(compute_split(defect_units, project.config.split))
     unit_split.update(compute_split(ok_units, project.config.split))
     return {m.path: unit_split[key] for key, members in units.items() for m in members}
 
@@ -123,12 +129,14 @@ MIN_UNIQUE_PER_CLASS = 10
 def val_warnings(project: Project, split: dict[str, Split], defect: list[ImageEntry]) -> list[str]:
     """Why the Val metrics of a dataset may mislead, counted on the original images' labels
     (not crops; a defect seen in several crops is one defect). Images cut from one source count
-    once: per group and class the largest member count."""
+    once: per group and class the largest member count. Synthetic images count no defect."""
     names = [c.name for c in project.config.classes]
     counts = {"train": [0] * len(names), "val": [0] * len(names)}
     for key, members in split_units(project, defect).items():
         per_class = [0] * len(names)
         for m in members:
+            if m.synthetic:
+                continue
             member = [0] * len(names)
             for shape in project.load_labels(m).confirmed():
                 if 0 <= shape.class_id < len(names):
@@ -137,6 +145,7 @@ def val_warnings(project: Project, split: dict[str, Split], defect: list[ImageEn
         side = split[members[0].path]
         counts[side] = [a + b for a, b in zip(counts[side], per_class)]
     grouped = sum(1 for member in project.config.source_groups if member in split)  # defect + OK images
+    synthetic = [e.path for e in project.config.images if e.synthetic and e.path in split]
     warnings = []
     for i, name in enumerate(names):
         if counts["train"][i] + counts["val"][i] == 0:
@@ -155,6 +164,9 @@ def val_warnings(project: Project, split: dict[str, Split], defect: list[ImageEn
     if few:
         warnings.append(f"서로 다른 결함 수가 적습니다: {', '.join(few)} (클래스당 20개 이상 권장). "
                         "증강은 실제 결함 수를 대신하지 못합니다.")
+    if synthetic:
+        warnings.append(f"합성 이미지 {len(synthetic)}장은 같은 원본 묶음과 함께 Train에만 두었고, "
+                        "위 결함 수에서 뺐습니다.")
     if grouped:
         warnings.append(f"같은 원본에서 잘라낸 이미지 {grouped}장을 원본과 같은 쪽(Train/Val)에 두었습니다. "
                         "같은 결함이 두 번 학습되므로 원본이나 조각 중 한 종류만 쓰는 것을 권장합니다.")
