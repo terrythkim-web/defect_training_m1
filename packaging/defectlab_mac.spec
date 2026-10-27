@@ -1,4 +1,4 @@
-# PyInstaller spec — macOS 13+ on Apple Silicon (dist/DefectLab.app; build_mac.sh also makes the .dmg).
+# PyInstaller spec — macOS 13+ on Apple Silicon (dist/DefectLab.app; build_mac.sh renames it to DefectLab-<version>.app and makes the .dmg).
 # Build: packaging/build_mac.sh  (or: python -m PyInstaller --noconfirm packaging/defectlab_mac.spec)
 # One executable inside the bundle: the training worker is the same program started with
 # --train-worker (stdout works normally on macOS, unlike a windowed Windows exe).

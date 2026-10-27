@@ -24,6 +24,6 @@ DefectLab — Mac(M1 이후) 테스트 순서
 
 5. 설치본 (.app / .dmg) 빌드
    bash packaging/build_mac.sh
-   -> dist/DefectLab.app, dist/DefectLab-macos-arm64.dmg (체크리스트 8장)
+   -> dist/DefectLab-<버전>.app, dist/DefectLab-<버전>-macos-arm64.dmg (체크리스트 8장)
 
 공유할 것: self-check 출력, pytest 결과, 체크리스트 메모, bench.json

@@ -68,7 +68,7 @@ Phase G(PRD 5.2, PROMPTS 21단계) 확인용이다. GitHub Actions의 `macos-14`
 - [ ] 그레이스케일 프로젝트는 "컬러(3채널) 모델만" 안내가 나옴
 
 ## 8. Mac 설치본 (.app / .dmg, 22단계)
-- [ ] `pip install -e ".[package]"` 후 `packaging/build_mac.sh` → 마지막에 self-check 9개 `[OK]`, `dist/DefectLab-macos-arm64.dmg` 생성
+- [ ] `pip install -e ".[package]"` 후 `packaging/build_mac.sh` → 마지막에 self-check 9개 `[OK]`, `dist/DefectLab-<버전>-macos-arm64.dmg` 생성
 - [ ] 다른 Mac(또는 다른 사용자 계정)에 .dmg 복사 → 열기 → DefectLab을 Applications로 끌어다 놓기
 - [ ] 첫 실행 시 Gatekeeper 경고 → README 안내대로 열림 (macOS 버전: ____)
 - [ ] 설치본에서 1·3·5·6장의 핵심 동작 (프로젝트, 라벨링, MPS 학습 3 epoch, 비교 리포트, ONNX·CoreML 내보내기)
