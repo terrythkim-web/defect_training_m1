@@ -7,6 +7,8 @@
   "workspaceFolder": "/workspace",
   "remoteUser": "dev",
   "shutdownAction": "stopCompose",
+  // VS Code replaces the compose entrypoint with its own, so seed the Claude Code memory here
+  "postStartCommand": "bash docker/entrypoint.sh true",
   "customizations": {
     "vscode": {
       "extensions": ["ms-python.python", "anthropic.claude-code"],

@@ -6,8 +6,12 @@ set -e
 MEMORY_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-workspace/memory"
 if [ -d /workspace/docker/claude-memory ] && [ ! -f "$MEMORY_DIR/MEMORY.md" ]; then
   mkdir -p "$MEMORY_DIR"
-  cp -n /workspace/docker/claude-memory/*.md "$MEMORY_DIR/"
-  echo "Claude Code 메모리를 넣었습니다: $MEMORY_DIR"
+  # a failed copy must not keep the container from starting
+  if cp -n /workspace/docker/claude-memory/*.md "$MEMORY_DIR/"; then
+    echo "Claude Code 메모리를 넣었습니다: $MEMORY_DIR"
+  else
+    echo "Claude Code 메모리를 넣지 못했습니다: $MEMORY_DIR" >&2
+  fi
 fi
 if [ "$#" -eq 0 ]; then
   exec bash
