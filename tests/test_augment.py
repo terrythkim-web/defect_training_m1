@@ -86,7 +86,10 @@ def test_rotate90_swaps_size():
 def test_photometric_keeps_labels_exactly(key):
     img = np.random.default_rng(0).integers(0, 255, (H, W, 3), dtype=np.uint8)
     r = Augmenter(only(key), channels=3, seed=0)(img, ann(BOX, POLY))
-    assert [s.bounds() for s in r.annotations.shapes] == pytest.approx([BOX.bounds(), POLY.bounds()])
+    # one approx per shape: pytest ≥ 9.2 refuses nested sequences in approx
+    bounds = [s.bounds() for s in r.annotations.shapes]
+    assert len(bounds) == 2
+    assert bounds[0] == pytest.approx(BOX.bounds()) and bounds[1] == pytest.approx(POLY.bounds())
     assert r.image.shape == img.shape and r.image.dtype == np.uint8
 
 
