@@ -43,3 +43,11 @@ testpaths = ["tests"]
 # Slow tests (real training/export) run only on request: pytest -m slow
 addopts = "-m 'not slow'"
 markers = ["slow: real model training/export, minutes on CPU"]
+
+[tool.coverage.run]
+# pytest --cov: sysmon (Python 3.12+) traces every thread, also QThreads coverage's tracer never sees;
+# patch=subprocess also measures the training worker (QProcess) and --self-check runs.
+core = "sysmon"
+patch = ["subprocess"]
+parallel = true
+source = ["defect_inspection"]
