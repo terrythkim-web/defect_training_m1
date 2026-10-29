@@ -87,7 +87,9 @@ def test_model_switch_makes_a_new_assistant(controller, tmp_path):
 
 def test_prepare_small_image_encodes_ahead(controller):
     controller.prepare(np.zeros((64, 64, 3), np.uint8), "img")
-    assert wait_until(lambda: controller.log["ready"] == ["img"])
+    # The final status is emitted right after `ready`: wait for it, not just for `ready` (raced on Windows CI).
+    assert wait_until(lambda: any("SAM 준비 완료" in s for s in controller.log["status"]))
+    assert controller.log["ready"] == ["img"]
     assert controller.assistant.calls == ["load", "prepare img"]
     status = controller.log["status"]
     assert "불러오는 중" in status[0] and "이미지 분석 중" in status[1] and "SAM 준비 완료" in status[-1]
