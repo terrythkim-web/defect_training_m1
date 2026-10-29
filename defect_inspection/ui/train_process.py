@@ -39,7 +39,7 @@ class TrainProcess(QObject):
         self._stop_requested = False
         self._kill_timer = QTimer(self)
         self._kill_timer.setSingleShot(True)
-        self._kill_timer.timeout.connect(self._kill)
+        self._kill_timer.timeout.connect(self.kill)
         self.stop_timeout_ms = STOP_TIMEOUT_MS
 
     @property
@@ -80,7 +80,8 @@ class TrainProcess(QObject):
     def wait(self, msecs: int = 30_000) -> bool:
         return not self.running or self.process.waitForFinished(msecs)
 
-    def _kill(self) -> None:
+    def kill(self) -> None:
+        """Kill the worker at once (after a stop request that was not answered in time)."""
         if self.running:
             self.log.emit("응답이 없어 학습 프로세스를 강제 종료합니다")
             self.process.kill()

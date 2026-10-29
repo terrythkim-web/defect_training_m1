@@ -246,7 +246,7 @@ def test_log_saved_per_run_and_fresh_for_each_run(panel, qapp, monkeypatch):
     assert log_text(panel).count("학습 완료") == 1  # the second run's log starts empty
     assert (Path(done[0]) / LOG_FILE).read_text(encoding="utf-8") == saved  # untouched
 
-    rows = {panel._runs[i].path: i for i in range(len(panel._runs))}
+    rows = {panel.history.runs[i].path: i for i in range(len(panel.history.runs))}
     panel.history.selectRow(rows[Path(done[0])])
     assert log_text(panel) == saved.rstrip("\n")
 
@@ -272,7 +272,7 @@ def test_resume_appends_to_the_run_log(panel, qapp, monkeypatch):
 def test_old_run_without_log(panel, qapp):
     panel.start()
     assert wait_until(qapp, lambda: not panel.running and panel.history.rowCount() == 1)
-    (panel._runs[0].path / LOG_FILE).unlink()
+    (panel.history.runs[0].path / LOG_FILE).unlink()
     panel.history.clearSelection()
     panel.history.selectRow(0)
     assert "저장된 로그가 없습니다" in log_text(panel)
