@@ -168,8 +168,9 @@ def test_no_project_disables_panel(qapp, tmp_path):
 
 def test_preview_fills_nine_tiles(panel, qapp):
     panel.refresh_preview()
-    assert wait_until(qapp, lambda: all(not p.isNull() for p in panel.preview_pixmaps))
-    assert "무작위" in panel.preview_status.text()
+    # Wait for the status, set last: the tiles may still hold an earlier preview (shown on showEvent).
+    assert wait_until(qapp, lambda: "무작위" in panel.preview_status.text())
+    assert all(not p.isNull() for p in panel.preview_pixmaps)
 
 
 def test_preview_refreshes_after_setting_change(panel, qapp):
