@@ -394,6 +394,7 @@ class MainWindow(QMainWindow):
         self.augment_panel.wait_build()  # also covers a thread that just finished
         self.result_panel.shutdown()
         self.compare_panel.shutdown()
+        self._close_edge_check()
         self._close_session()
         self.save_layout()
         self.sam_controller.shutdown()
@@ -413,6 +414,7 @@ class MainWindow(QMainWindow):
     # ---- project -------------------------------------------------------------------
     def load_project(self, project: Project | None) -> None:
         self._close_session()
+        self._close_edge_check()  # its rows belong to the old project
         self.project = project
         self.roi_store = None if project is None else RoiStore(project.root)
         if self.roi_store is not None:
@@ -462,7 +464,8 @@ class MainWindow(QMainWindow):
         Returns True if the image list changed."""
         if self.project is None:
             return False
-        if self.augment_panel.is_building or self.compare_panel.busy or self.result_panel.busy:
+        edge_check_busy = self.edge_check_dialog is not None and self.edge_check_dialog.busy
+        if self.augment_panel.is_building or self.compare_panel.busy or self.result_panel.busy or edge_check_busy:
             self.images_sync_timer.start()  # those threads read the image list: wait for them
             return False
         if self.current_image is not None and not self.project.image_abspath(self.current_image).is_file():
@@ -492,11 +495,18 @@ class MainWindow(QMainWindow):
         if self.project is None:
             return
         self._save_all()  # judge the labels as they are on screen
+        self._close_edge_check()  # one check at a time, always with the current labels and settings
         dialog = EdgeCheckDialog(self.project, self.project.config.edge_filter, self)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.open_image.connect(self.open_image_for_labeling)
+        dialog.destroyed.connect(lambda: setattr(self, "edge_check_dialog", None))
         self.edge_check_dialog = dialog
         dialog.show()
+
+    def _close_edge_check(self) -> None:
+        if self.edge_check_dialog is not None:
+            self.edge_check_dialog.close()  # cancels its check; deleted later (WA_DeleteOnClose)
+            self.edge_check_dialog = None
 
     def check_image_groups_dialog(self) -> None:
         """Menu: check again and list every group, also when nothing new was found."""

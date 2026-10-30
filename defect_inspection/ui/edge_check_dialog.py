@@ -7,7 +7,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -28,9 +28,15 @@ from defect_inspection.core.project import Project
 COLUMNS = ("이미지", "클래스", "박스 (x1, y1, x2, y2)", "결과", "찾은 선")
 
 
+class _Relay(QObject):
+    """Carries the worker's result. Parentless and held by the worker, so the dialog may be deleted
+    while the check runs: Qt drops the queued call to a destroyed receiver."""
+
+    done = Signal(object)  # list[LabelCheck] | Exception
+
+
 class EdgeCheckDialog(QDialog):
     open_image = Signal(str)  # double-clicked row → show the image on the canvas
-    _done = Signal(object)  # list[LabelCheck] | Exception, from the worker thread
 
     def __init__(self, project: Project, cfg: EdgeFilterConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,19 +69,17 @@ class EdgeCheckDialog(QDialog):
         layout.addWidget(self.table, 1)
         layout.addWidget(QLabel(self.tr("더블클릭: 왼쪽 캔버스에서 이미지 보기")))
 
-        self._done.connect(self._on_done)
-        cfg, cancel = cfg.model_copy(), self._cancel
-        self._pool.submit(self._run, project, cfg, cancel)
+        relay = _Relay()
+        relay.done.connect(self._on_done)
+        self._relay = relay
+        entries = list(project.config.images)  # the worker never reads the live list (folder sync edits it)
+        self._future = self._pool.submit(_run, relay, project, cfg.model_copy(), entries, self._cancel)
+        self._pool.shutdown(wait=False)  # one job only: the thread ends with it
 
-    def _run(self, project: Project, cfg: EdgeFilterConfig, cancel: threading.Event) -> None:
-        try:
-            payload = check_labels(project, cfg, cancel=cancel.is_set)
-        except Exception as e:  # noqa: BLE001 - shown in the dialog
-            payload = e
-        try:
-            self._done.emit(payload)
-        except RuntimeError:
-            pass  # dialog already deleted
+    @property
+    def busy(self) -> bool:
+        """The check is still reading images: the image folder sync waits for it."""
+        return not self._future.done()
 
     def _on_done(self, payload) -> None:
         if isinstance(payload, Exception):
@@ -111,5 +115,12 @@ class EdgeCheckDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self._cancel.set()
-        self._pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
+
+
+def _run(relay: _Relay, project: Project, cfg: EdgeFilterConfig, entries: list, cancel: threading.Event) -> None:
+    try:
+        payload = check_labels(project, cfg, entries, cancel=cancel.is_set)
+    except Exception as e:  # noqa: BLE001 - shown in the dialog
+        payload = e
+    relay.done.emit(payload)

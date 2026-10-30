@@ -58,6 +58,7 @@ from defect_inspection.ui.widgets.edge_filter_box import EdgeFilterBox
 
 TILE = 180
 EVAL_CONF = 0.01  # predict once at a low threshold; the conf slider then filters instantly
+VIEW_JOBS = ("evaluate", "refilter", "test")  # results only shown for the run/project they were made for
 REFILTER_DELAY_MS = 400  # edge filter settings settle this long before the cached results are re-filtered
 FILTERS = [("all", "전체"), ("problem", "오검·미검"), ("missed", "미검 (놓친 결함)"), ("false", "오검 (잘못 검출)"), ("ok", "정상")]
 PLOTS = [
@@ -95,6 +96,8 @@ class ResultPanel(QWidget):
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="result")
         self._predictors: dict[tuple[str, float], Predictor] = {}
         self._gen = 0
+        self._view_gen = 0  # bumped when the project or run changes: late VIEW_JOBS results are dropped
+        self._running_kind = ""
         self._cancel = threading.Event()
         self._busy = False
         self._done.connect(self._on_done)
@@ -247,8 +250,15 @@ class ResultPanel(QWidget):
     def iou_value(self) -> float:
         return self.iou.value() / 100
 
+    def _invalidate_view(self) -> None:
+        """Results of running evaluate/refilter/test jobs no longer belong on screen. Suggestions are
+        not dropped: they already changed label files, and the window must reload them."""
+        self._view_gen += 1
+        self._refilter_timer.stop()
+
     def set_project(self, project: Project | None) -> None:
         self._cancel.set()
+        self._invalidate_view()
         self.project = project
         self.raw_results, self.results = [], []
         self.edge_box.set_config(project.config.edge_filter if project else EdgeFilterConfig())
@@ -292,6 +302,7 @@ class ResultPanel(QWidget):
         return 0 if self.project is None else len(unlabeled_images(self.project))
 
     def _on_run_changed(self) -> None:
+        self._invalidate_view()
         self.raw_results, self.results = [], []
         self.grid.clear()
         self.summary.setText("" if self.current_run else self.tr("학습이 끝난 run이 없습니다. Train 탭에서 학습하세요."))
@@ -346,7 +357,9 @@ class ResultPanel(QWidget):
         gen = self._gen
         self._cancel = threading.Event()
         cancel = self._cancel
+        view = self._view_gen
         self._busy = True
+        self._running_kind = kind
         self.progress.setValue(0)
         self.progress.setVisible(True)
         self._update_buttons()
@@ -356,7 +369,7 @@ class ResultPanel(QWidget):
                 payload = job(lambda d, t: self._emit(self._progress, gen, d, t), cancel.is_set)
             except Exception as e:  # noqa: BLE001 - shown to the user
                 payload = e
-            self._emit(self._done, gen, kind, payload)
+            self._emit(self._done, gen, kind, (view, payload))
 
         self._pool.submit(run)
         return gen
@@ -378,6 +391,9 @@ class ResultPanel(QWidget):
         self._busy = False
         self.progress.setVisible(False)
         self._update_buttons()
+        view, payload = payload
+        if kind in VIEW_JOBS and view != self._view_gen:
+            return  # made for a run or project no longer shown
         if isinstance(payload, Exception):
             QMessageBox.warning(self, self.tr("결과"), f"{type(payload).__name__}: {payload}")
             return
@@ -412,8 +428,10 @@ class ResultPanel(QWidget):
         iou, edge = self.iou_value, self._edge_snapshot()
 
         def job(progress, cancel):
-            raw = evaluate_images(project, self._model(run), paths, EVAL_CONF, iou, progress, cancel)
-            return raw, apply_edge_filter(project, raw, edge, progress, cancel), edge
+            # with the filter on, prediction fills the first half of the bar and filtering the second
+            half = (lambda d, t: progress(d, 2 * t)) if edge.enabled else progress
+            raw = evaluate_images(project, self._model(run), paths, EVAL_CONF, iou, half, cancel)
+            return raw, apply_edge_filter(project, raw, edge, lambda d, t: progress(t + d, 2 * t), cancel), edge
 
         self.summary.setText(self.tr("검증 이미지 {0}장 예측 중…").format(len(paths)))
         self._submit("evaluate", job)
@@ -563,8 +581,10 @@ class ResultPanel(QWidget):
     def suggest(self, run: RunInfo | None = None) -> bool:
         run = run or self.current_run
         project = self.project
-        if run is None or project is None or self._busy:
+        if run is None or project is None or (self._busy and self._running_kind not in VIEW_JOBS):
             return False
+        if self._busy:
+            self._cancel.set()  # an evaluation or refilter only updates the view: suggestions go first
         self.before_suggest()  # save the open image's labels first
         paths = unlabeled_images(project)
         if not paths:

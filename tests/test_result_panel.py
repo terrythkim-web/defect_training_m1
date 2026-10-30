@@ -472,3 +472,61 @@ def test_edge_check_menu_lists_labels_and_opens_image(window, qapp):
     dialog.table.cellDoubleClicked.emit(0, 0)
     assert window.image_panel.current_path() == path
     dialog.close()
+
+
+def test_late_view_results_are_dropped_after_a_context_change(window, panel, qapp, monkeypatch):
+    """Review fix: a refilter still running when the project (or run) changes must not fill the grid."""
+    import threading
+
+    from defect_inspection.ui.panels import result_panel as RP
+
+    panel.evaluate()
+    assert wait_until(qapp, lambda: panel.results)
+    gate, started = threading.Event(), threading.Event()
+    original = RP.apply_edge_filter
+
+    def slow(*a, **k):
+        started.set()
+        gate.wait(10)
+        return original(*a, **k)
+
+    monkeypatch.setattr(RP, "apply_edge_filter", slow)
+    panel.edge_box.setChecked(True)
+    assert wait_until(qapp, lambda: started.is_set())
+    panel.refresh_runs()  # e.g. a training run finished and got selected: nothing is cancelled
+    gate.set()
+    assert wait_until(qapp, lambda: not panel.busy)
+    assert panel.results == [] and panel.raw_results == [] and panel.grid.count() == 0
+
+
+def test_suggest_cancels_a_running_refilter(window, panel, qapp, monkeypatch):
+    """Quick suggest after training must not be refused because a refilter happens to run."""
+    import threading
+
+    from defect_inspection.ui.panels import result_panel as RP
+
+    panel.evaluate()
+    assert wait_until(qapp, lambda: panel.results)
+    gate, started = threading.Event(), threading.Event()
+    original = RP.apply_edge_filter
+    monkeypatch.setattr(RP, "apply_edge_filter", lambda *a, **k: started.set() or gate.wait(10) and original(*a, **k))
+    panel.edge_box.setChecked(True)
+    assert wait_until(qapp, lambda: started.is_set())
+    assert panel.suggest()
+    gate.set()
+    assert wait_until(qapp, lambda: "제안 완료" in panel.suggest_status.text())
+
+
+def test_edge_check_dialog_closed_with_the_project(window, qapp):
+    window.act_check_edges.trigger()
+    dialog = window.edge_check_dialog
+    assert dialog is not None
+    window.load_project(window.project)
+    assert wait_until(qapp, lambda: window.edge_check_dialog is None)
+
+
+def test_folder_sync_waits_for_the_edge_check(window, qapp, monkeypatch):
+    window.act_check_edges.trigger()
+    monkeypatch.setattr(type(window.edge_check_dialog), "busy", property(lambda self: True))
+    assert window.sync_images_folder() is False and window.images_sync_timer.isActive()
+    window.edge_check_dialog.close()

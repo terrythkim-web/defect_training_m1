@@ -20,7 +20,7 @@ import numpy as np
 from defect_inspection.core.edge_band import EdgeHit, edge_under_box
 from defect_inspection.core.edge_filter_config import EdgeFilterConfig
 from defect_inspection.core.evaluate import ImageResult, load_training_image, match
-from defect_inspection.core.project import Project
+from defect_inspection.core.project import ImageEntry, Project
 
 
 @dataclass(frozen=True)
@@ -109,19 +109,21 @@ class LabelCheck:
         return self.hit is not None
 
 
-def check_labels(project: Project, cfg: EdgeFilterConfig,
+def check_labels(project: Project, cfg: EdgeFilterConfig, entries: list[ImageEntry] | None = None,
                  progress: Callable[[int, int], None] | None = None,
                  cancel: Callable[[], bool] | None = None) -> list[LabelCheck]:
-    """Every confirmed label of every project image, judged with `cfg` (also when it is off)."""
+    """Every confirmed label of `entries` (default: all project images), judged with `cfg` (also when
+    it is off). A worker thread gets `entries` copied on the UI thread; images deleted since are skipped."""
     names = [c.name for c in project.config.classes]
-    entries = [e for e in project.config.images if project.label_status(e).confirmed]
+    entries = [e for e in (project.config.images if entries is None else entries)
+               if project.label_status(e).confirmed]
     out = []
     for i, entry in enumerate(entries, 1):
         if cancel is not None and cancel():
             break
         image = load_training_image(project, entry.path)
         if image is not None:
-            for shape in project.load_labels(entry).confirmed():
+            for shape in project.load_labels(entry.path, size=(image.shape[1], image.shape[0])).confirmed():
                 name = names[shape.class_id] if shape.class_id < len(names) else str(shape.class_id)
                 out.append(LabelCheck(entry.path, name, shape.bounds(), edge_under_box(image, shape.bounds(), cfg)))
         if progress is not None:

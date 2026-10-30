@@ -215,3 +215,14 @@ def test_overlay_draws_dropped_boxes_and_edge_lines():
     edged = draw_comparison(np.full((1024, 512), 200, np.uint8), [], [ON_EDGE.shape], edges=[(hit, ON_EDGE.shape)])
     no_edge = draw_comparison(np.full((1024, 512), 200, np.uint8), [], [ON_EDGE.shape])
     assert (edged != no_edge).any()
+
+
+def test_check_labels_on_a_snapshot_skips_deleted_images(tmp_path):
+    """Review fix: the dialog passes the image list taken on the UI thread; an image deleted in the
+    meantime (folder sync) is skipped instead of failing the whole check."""
+    from defect_inspection.core.edge_filter import check_labels
+
+    p, path, _ = edge_project(tmp_path)
+    entries = list(p.config.images)
+    p.image_abspath(path).unlink()
+    assert check_labels(p, EdgeFilterConfig(), entries=entries) == []
