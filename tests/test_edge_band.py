@@ -1,6 +1,7 @@
 """Edge filter (PRD F9): a prediction is kept only if it sits on the object's outermost edge —
-a thin dark line in a strip around the box, with flat background beyond it and no further line.
-Synthetic panels: textured interior with extra dark lines, flat background beyond the edge."""
+a thin dark or bright line under the box, with flat background and no further line from it to the image border.
+Synthetic panels: textured interior with extra dark lines, flat background beyond the edge.
+Inverted (255 - panel) they show a bright edge line on a dark background, like a display panel."""
 
 from __future__ import annotations
 
@@ -48,19 +49,22 @@ def on_row(y, x=200, half=15):
 # ---- config --------------------------------------------------------------------------------
 
 def test_config_defaults_and_limits():
-    assert (CFG.enabled, CFG.along_px, CFG.across_px, CFG.touch_px) == (False, 200, 30, 12)
+    assert (CFG.enabled, CFG.along_px, CFG.touch_px) == (False, 200, 12)
+    assert CFG.line_polarity == "both"
     with pytest.raises(ValueError):
-        EdgeFilterConfig(across_px=-1)
+        EdgeFilterConfig(line_polarity="grey")
+    with pytest.raises(ValueError):
+        EdgeFilterConfig(along_px=-1)
     with pytest.raises(ValueError):
         EdgeFilterConfig(min_length=0)
 
 
 def test_config_saved_in_project(tmp_path):
     p = Project.create(tmp_path / "p")
-    p.config.edge_filter = EdgeFilterConfig(enabled=True, along_px=150, across_px=40, touch_px=5)
+    p.config.edge_filter = EdgeFilterConfig(enabled=True, along_px=150, touch_px=5, line_polarity="dark")
     p.save()
     again = Project.open(tmp_path / "p").config.edge_filter
-    assert (again.enabled, again.along_px, again.across_px, again.touch_px) == (True, 150, 40, 5)
+    assert (again.enabled, again.along_px, again.touch_px, again.line_polarity) == (True, 150, 5, "dark")
 
 
 # ---- boxes on the edge are kept ---------------------------------------------------------------
@@ -127,16 +131,24 @@ def test_box_along_most_of_the_edge():
     assert edge_under_box(panel(), (10, EDGE_ROW - 15, W - 10, EDGE_ROW + 15), CFG) is not None
 
 
-def test_narrow_strip_still_reaches_the_touch_distance():
-    """`across_px` below what `touch_px` needs is widened, not a silent rejection."""
-    cfg = EdgeFilterConfig(across_px=8)
-    assert edge_under_box(panel(), (180, EDGE_ROW - 42, 220, EDGE_ROW - 2), cfg) is not None
-
-
 def test_line_along_the_image_border():
     """Nothing beyond a line at the very border to check: it counts as the edge."""
     img = panel(edge_row=H - 6)
     assert edge_under_box(img, on_row(H - 6, half=5), CFG) is not None
+
+
+def test_bright_edge_line_on_dark_background():
+    hit = edge_under_box(255 - panel(), on_row(EDGE_ROW), CFG)
+    assert hit is not None and hit.axis == "h" and hit.outward == 1
+    assert abs(hit.position - EDGE_ROW) <= 2
+
+
+@pytest.mark.parametrize("polarity, dark_kept, bright_kept",
+                         [("both", True, True), ("dark", True, False), ("bright", False, True)])
+def test_line_polarity_setting(polarity, dark_kept, bright_kept):
+    cfg = EdgeFilterConfig(line_polarity=polarity)
+    assert (edge_under_box(panel(), on_row(EDGE_ROW), cfg) is not None) is dark_kept
+    assert (edge_under_box(255 - panel(), on_row(EDGE_ROW), cfg) is not None) is bright_kept
 
 
 # ---- other boxes are dropped -----------------------------------------------------------------
@@ -151,6 +163,40 @@ def test_line_with_another_line_just_outside_is_not_the_edge():
     img = panel(inner_rows=(EDGE_ROW - 30,), flat_rows=(EDGE_ROW - 28, EDGE_ROW))
     assert edge_under_box(img, on_row(EDGE_ROW - 30, half=8), CFG) is None
     assert edge_under_box(img, on_row(EDGE_ROW, half=8), CFG) is not None
+
+
+def test_bright_inner_line_with_the_edge_beyond_is_not_the_edge():
+    img = 255 - panel(inner_rows=(EDGE_ROW - 30,), flat_rows=(EDGE_ROW - 28, EDGE_ROW))
+    assert edge_under_box(img, on_row(EDGE_ROW - 30, half=8), CFG) is None
+    assert edge_under_box(img, on_row(EDGE_ROW, half=8), CFG) is not None
+
+
+def test_line_of_the_other_polarity_beyond_is_still_a_line():
+    """A dark edge with a bright line just outside it: the bright line counts as 'another line beyond'."""
+    img = panel()
+    img[EDGE_ROW + 21:EDGE_ROW + 24, :] = 255  # beyond `touch_px`, else it would be the edge itself
+    assert edge_under_box(img, on_row(EDGE_ROW, half=8), CFG) is None
+
+
+@pytest.mark.parametrize("gap", [30, 100, 300])
+def test_inner_line_with_flat_panel_beyond_is_not_the_edge(gap):
+    """Strictly the outermost line: however wide the flat stretch beyond an inner line, the edge
+    further out disqualifies it."""
+    img = panel(inner_rows=(EDGE_ROW - gap,), flat_rows=(EDGE_ROW - gap + 2, EDGE_ROW))
+    assert edge_under_box(img, on_row(EDGE_ROW - gap, half=8), CFG) is None
+    assert edge_under_box(img, on_row(EDGE_ROW, half=8), CFG) is not None
+
+
+def test_bright_inner_line_on_a_flat_dark_display_is_not_the_edge():
+    """A pad border inside a dark display: flat dark beyond it, but the panel edge lies further out."""
+    img = 255 - panel(inner_rows=(EDGE_ROW - 150,), flat_rows=(EDGE_ROW - 148, EDGE_ROW))
+    assert edge_under_box(img, on_row(EDGE_ROW - 150, half=8), CFG) is None
+
+
+def test_dust_far_out_in_the_background_is_allowed():
+    img = panel()
+    img[1000:1006, 100:106] = 0
+    assert edge_under_box(img, on_row(EDGE_ROW), CFG) is not None
 
 
 def test_line_tilted_beyond_the_limit():
