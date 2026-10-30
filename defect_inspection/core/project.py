@@ -24,6 +24,7 @@ from defect_inspection.core.annotation import (
 )
 from defect_inspection.core.augment_config import BUILTIN_PRESETS, DEFAULT_PRESET, AugmentConfig
 from defect_inspection.core.crop_config import CropConfig
+from defect_inspection.core.edge_filter_config import EdgeFilterConfig
 from defect_inspection.core.imaging import is_grayscale, to_grayscale
 from defect_inspection.platform_utils import (
     atomic_write_text,
@@ -114,6 +115,8 @@ class ProjectConfig(BaseModel):
     augment: AugmentConfig = Field(default_factory=lambda: BUILTIN_PRESETS[DEFAULT_PRESET].model_copy(deep=True))
     # Crop dataset (F7.2-F7.4); manual ROIs themselves live in crops.json.
     crop: CropConfig = Field(default_factory=CropConfig)
+    # Keep only predictions on the object's outermost edge (F9); per-box check in core/edge_band.py.
+    edge_filter: EdgeFilterConfig = Field(default_factory=EdgeFilterConfig)
     # Images that are slices/copies of another project image (core/image_groups): member -> source.
     # A group stays on one side of the Train/Val split (dataset.split_images).
     source_groups: dict[str, str] = Field(default_factory=dict)
