@@ -35,6 +35,7 @@ from defect_inspection.core.sam_assist import DEFAULT_SAM_MODEL, SAM_MODEL_CHOIC
 from defect_inspection import platform_utils
 from defect_inspection.platform_utils import OVERLAY_SCROLLBARS, cache_dir, config_dir, detect_device
 from defect_inspection.ui.canvas.image_canvas import CanvasPanel
+from defect_inspection.ui.edge_check_dialog import EdgeCheckDialog
 from defect_inspection.ui.group_checker import GroupChecker
 from defect_inspection.ui.new_project_dialog import NewProjectDialog
 from defect_inspection.core.roi import RoiStore
@@ -108,6 +109,7 @@ class MainWindow(QMainWindow):
         self.images_sync_timer.timeout.connect(self.sync_images_folder)
         # Slices / copies of other project images (core/image_groups), checked in the background.
         self.group_checker = GroupChecker(self)
+        self.edge_check_dialog: EdgeCheckDialog | None = None  # 도구 → 테두리 검사 (non-modal)
         self.group_checker.finished.connect(self._on_groups_found)
         self._group_generation = 0
         self._groups_applied = 0
@@ -303,6 +305,7 @@ class MainWindow(QMainWindow):
         self.result_panel.open_image.connect(self.open_image_for_labeling)
         self.result_panel.labels_changed.connect(self._on_labels_changed_externally)
         self.result_panel.quick_train_requested.connect(self.start_quick_suggest)
+        self.result_panel.settings_changed.connect(self.mark_dirty)
         self.train_panel.run_finished.connect(self._on_run_finished)
         self.augment_panel.build_finished.connect(self._on_quick_build_finished)
         self.augment_panel.build_stopped.connect(self._on_quick_build_stopped)
@@ -483,6 +486,17 @@ class MainWindow(QMainWindow):
         self._show_groups_when_done = self._show_groups_when_done or show_result
         items = [(e.path, self.project.image_abspath(e)) for e in self.project.config.images]
         self._group_generation = self.group_checker.check(items)
+
+    def check_edges_dialog(self) -> None:
+        """Menu 도구 → 테두리 검사 (F9): every confirmed label judged by the edge rule, non-modal."""
+        if self.project is None:
+            return
+        self._save_all()  # judge the labels as they are on screen
+        dialog = EdgeCheckDialog(self.project, self.project.config.edge_filter, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.open_image.connect(self.open_image_for_labeling)
+        self.edge_check_dialog = dialog
+        dialog.show()
 
     def check_image_groups_dialog(self) -> None:
         """Menu: check again and list every group, also when nothing new was found."""
@@ -893,6 +907,10 @@ class MainWindow(QMainWindow):
         self.act_check_groups = tool_menu.addAction(self.tr("중복·조각 이미지 검사"), self.check_image_groups_dialog)
         self._project_actions.append(self.act_check_groups)
         self.act_check_groups.setEnabled(self.project is not None)
+        self.act_check_edges = tool_menu.addAction(self.tr("테두리 검사 (라벨 박스)"), self.check_edges_dialog)
+        self.act_check_edges.setToolTip(self.tr("확정 라벨마다 테두리 필터 규칙으로 판정 — 필터가 숨길 진짜 결함 확인"))
+        self._project_actions.append(self.act_check_edges)
+        self.act_check_edges.setEnabled(self.project is not None)
         menu = bar.addMenu(self.tr("설정"))
         self.act_sam_model = menu.addAction(self.tr("SAM 모델…"), self.choose_sam_model_dialog)
         self.act_autosave = menu.addAction(self.tr("자동 저장 간격…"), self.autosave_interval_dialog)

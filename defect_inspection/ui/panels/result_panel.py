@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -29,7 +29,13 @@ from PySide6.QtWidgets import (
 )
 
 from defect_inspection.core.crop import TiledPredictor
-from defect_inspection.core.edge_filter import EdgeFilteredPredictor, settings_text, with_edge_filter
+from defect_inspection.core.edge_filter import (
+    EdgeFilteredPredictor,
+    apply_edge_filter,
+    filter_predictions,
+    settings_text,
+    with_edge_filter,
+)
 from defect_inspection.core.edge_filter_config import EdgeFilterConfig
 from defect_inspection.core.evaluate import (
     ImageResult,
@@ -43,14 +49,16 @@ from defect_inspection.core.evaluate import (
     val_images,
 )
 from defect_inspection.core.imaging import to_training_8bit
-from defect_inspection.core.preview import GT_COLOR, PRED_COLOR, draw_comparison
+from defect_inspection.core.preview import DROPPED_COLOR, EDGE_COLOR, GT_COLOR, PRED_COLOR, draw_comparison
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import RunInfo, list_runs, weights_paths
 from defect_inspection.platform_utils import imread_unicode, is_supported_image
 from defect_inspection.ui.canvas.image_canvas import numpy_to_qimage
+from defect_inspection.ui.widgets.edge_filter_box import EdgeFilterBox
 
 TILE = 180
 EVAL_CONF = 0.01  # predict once at a low threshold; the conf slider then filters instantly
+REFILTER_DELAY_MS = 400  # edge filter settings settle this long before the cached results are re-filtered
 FILTERS = [("all", "전체"), ("problem", "오검·미검"), ("missed", "미검 (놓친 결함)"), ("false", "오검 (잘못 검출)"), ("ok", "정상")]
 PLOTS = [
     ("confusion_matrix_normalized.png", "Confusion matrix (정규화)"),
@@ -72,6 +80,7 @@ class ResultPanel(QWidget):
     open_image = Signal(str)  # image path -> show it on the canvas for relabeling (F5.4)
     labels_changed = Signal(list)  # image paths whose label files were changed by suggestions
     quick_train_requested = Signal()  # main window builds the dataset if needed and trains yolo11n
+    settings_changed = Signal()  # project.config.edge_filter was edited (unsaved project)
     _done = Signal(int, str, object)  # generation, job kind, payload (from the worker thread)
     _progress = Signal(int, int, int)  # generation, done, total
 
@@ -79,6 +88,7 @@ class ResultPanel(QWidget):
         super().__init__(parent)
         self.project: Project | None = None
         self.runs: list[RunInfo] = []
+        self.raw_results: list[ImageResult] = []  # Val predictions before the edge filter
         self.results: list[ImageResult] = []
         self.results_edge: EdgeFilterConfig | None = None  # edge filter the results were predicted with
         self.before_suggest: Callable[[], None] = lambda: None
@@ -120,6 +130,13 @@ class ResultPanel(QWidget):
         sliders.addWidget(self.iou_label)
         sliders.addWidget(self.iou, 1)
         top.addLayout(sliders)
+        self.edge_box = EdgeFilterBox()
+        self.edge_box.changed.connect(self._on_edge_changed)
+        top.addWidget(self.edge_box)
+        self._refilter_timer = QTimer(self)  # spin boxes fire per step: re-filter once they settle
+        self._refilter_timer.setSingleShot(True)
+        self._refilter_timer.setInterval(REFILTER_DELAY_MS)
+        self._refilter_timer.timeout.connect(self._refilter)
 
         # Val grid
         self.filter_combo = QComboBox()
@@ -130,9 +147,15 @@ class ResultPanel(QWidget):
         self.btn_eval.clicked.connect(self.evaluate)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
-        legend = QLabel(f'<span style="color:{GT_COLOR}; font-weight:bold">━━</span> {self.tr("정답(라벨)")}'
-                        f'&nbsp;&nbsp;&nbsp;<span style="color:{PRED_COLOR}; font-weight:bold">━━</span> '
-                        f'{self.tr("예측 (점수)")}&nbsp;&nbsp;&nbsp;{self.tr("더블클릭: 왼쪽에서 라벨 수정")}')
+        def key(color: str, text: str) -> str:  # one legend entry, never broken across lines
+            return (f'<span style="white-space:nowrap"><span style="color:{color}; font-weight:bold">━━</span> '
+                    f'{text}</span>')
+
+        legend = QLabel("&nbsp;&nbsp; ".join([
+            key(GT_COLOR, self.tr("정답(라벨)")), key(PRED_COLOR, self.tr("예측 (점수)")),
+            key(DROPPED_COLOR, self.tr("테두리 필터로 제외")), key(EDGE_COLOR, self.tr("찾은 테두리 선")),
+            f'<span style="white-space:nowrap">{self.tr("더블클릭: 왼쪽에서 라벨 수정")}</span>']))
+        legend.setWordWrap(True)
         self.grid = QListWidget()
         self.grid.setViewMode(QListWidget.ViewMode.IconMode)
         self.grid.setIconSize(QSize(TILE, TILE))
@@ -227,7 +250,9 @@ class ResultPanel(QWidget):
     def set_project(self, project: Project | None) -> None:
         self._cancel.set()
         self.project = project
-        self.results = []
+        self.raw_results, self.results = [], []
+        self.edge_box.set_config(project.config.edge_filter if project else EdgeFilterConfig())
+        self.edge_box.setEnabled(project is not None)
         self.grid.clear()
         self.summary.setText("")
         self.refresh_runs()
@@ -267,7 +292,7 @@ class ResultPanel(QWidget):
         return 0 if self.project is None else len(unlabeled_images(self.project))
 
     def _on_run_changed(self) -> None:
-        self.results = []
+        self.raw_results, self.results = [], []
         self.grid.clear()
         self.summary.setText("" if self.current_run else self.tr("학습이 끝난 run이 없습니다. Train 탭에서 학습하세요."))
         self._fill_plots()
@@ -287,6 +312,9 @@ class ResultPanel(QWidget):
 
     def _edge_snapshot(self) -> EdgeFilterConfig:
         return self.project.config.edge_filter.model_copy()
+
+    def dropped_note(self, n: int) -> str:
+        return self.tr(" · 테두리 필터로 제외 {0}개").format(n) if n else ""
 
     def edge_note(self, edge: EdgeFilterConfig | None) -> str:
         """' · 테두리 필터 …' when the shown results were filtered, '' otherwise."""
@@ -354,6 +382,9 @@ class ResultPanel(QWidget):
             QMessageBox.warning(self, self.tr("결과"), f"{type(payload).__name__}: {payload}")
             return
         if kind == "evaluate":
+            self.raw_results, self.results, self.results_edge = payload
+            self._fill_grid()
+        elif kind == "refilter":
             self.results, self.results_edge = payload
             self._fill_grid()
         elif kind == "test":
@@ -381,8 +412,8 @@ class ResultPanel(QWidget):
         iou, edge = self.iou_value, self._edge_snapshot()
 
         def job(progress, cancel):
-            predictor = self._predictor(run, edge)
-            return evaluate_images(project, predictor, paths, EVAL_CONF, iou, progress, cancel), edge
+            raw = evaluate_images(project, self._model(run), paths, EVAL_CONF, iou, progress, cancel)
+            return raw, apply_edge_filter(project, raw, edge, progress, cancel), edge
 
         self.summary.setText(self.tr("검증 이미지 {0}장 예측 중…").format(len(paths)))
         self._submit("evaluate", job)
@@ -390,11 +421,39 @@ class ResultPanel(QWidget):
     def visible_results(self) -> list[ImageResult]:
         """Results re-matched at the current conf threshold."""
         out = []
+        conf = self.conf_value
         for r in self.results:
-            preds = [p for p in r.predictions if p.score >= self.conf_value]
+            hits = r.edge_hits or [None] * len(r.predictions)
+            kept = [(p, h) for p, h in zip(r.predictions, hits) if p.score >= conf]
+            preds = [p for p, _ in kept]
             matched, missed = match(r.ground_truth, preds)
-            out.append(ImageResult(r.path, r.width, r.height, r.ground_truth, preds, matched, missed))
+            out.append(ImageResult(r.path, r.width, r.height, r.ground_truth, preds, matched, missed,
+                                   dropped=[p for p in r.dropped if p.score >= conf],
+                                   edge_hits=[h for _, h in kept] if r.edge_hits else []))
         return out
+
+    # ---- edge filter (F9) ---------------------------------------------------------------------
+    def _on_edge_changed(self) -> None:
+        if self.project is None:
+            return
+        self.project.config.edge_filter = self.edge_box.config()
+        self.settings_changed.emit()
+        self._refilter_timer.start()
+
+    def _refilter(self) -> None:
+        """Apply the current settings to the cached Val predictions (no new prediction)."""
+        project, raw = self.project, self.raw_results
+        if project is None or not raw:
+            return
+        if self._busy:
+            self._refilter_timer.start()  # after the running job
+            return
+        edge = self._edge_snapshot()
+
+        def job(progress, cancel):
+            return apply_edge_filter(project, raw, edge, progress, cancel), edge
+
+        self._submit("refilter", job)
 
     def _fill_grid(self) -> None:
         self.grid.clear()
@@ -407,7 +466,8 @@ class ResultPanel(QWidget):
         self.summary.setText(self.tr(
             "검증 {0}장 · conf {1:.2f}: 맞음 {2}, 오검 {3}, 미검 {4} · precision {5:.2f}, recall {6:.2f} "
             "(IoU ≥ 0.5, 클래스 일치 기준)").format(len(shown), self.conf_value, tp, fp, fn, precision, recall)
-            + self.tiling_note() + self.edge_note(self.results_edge))
+            + self.tiling_note() + self.edge_note(self.results_edge)
+            + self.dropped_note(sum(len(r.dropped) for r in shown)))
         key = self.filter_combo.currentData()
         for r in shown:
             if not _filter_ok(r, key):
@@ -415,7 +475,9 @@ class ResultPanel(QWidget):
             image = load_training_image(self.project, r.path)
             if image is None:
                 continue
-            tile = draw_comparison(image, r.ground_truth, [p.shape for p in r.predictions], max_side=TILE * 2)
+            tile = draw_comparison(image, r.ground_truth, [p.shape for p in r.predictions], max_side=TILE * 2,
+                                   dropped=[p.shape for p in r.dropped],
+                                   edges=[(h, p.shape) for p, h in zip(r.predictions, r.edge_hits)])
             item = QListWidgetItem(QIcon(QPixmap.fromImage(numpy_to_qimage(tile))),
                                    f"{r.path}\nTP {r.tp} · FP {r.fp} · FN {r.fn}")
             item.setData(Qt.ItemDataRole.UserRole, r.path)
@@ -472,14 +534,18 @@ class ResultPanel(QWidget):
             if raw is None:
                 raise OSError(f"이미지를 읽을 수 없습니다: {path}")
             image = to_training_8bit(raw, project.channels)
-            preds = self._predictor(run, edge).predict(image, conf, iou)
-            return image, preds, edge
+            preds = self._model(run).predict(image, conf, iou)
+            if not edge.enabled:
+                return image, preds, [], [], edge
+            f = filter_predictions(image, preds, edge)
+            return image, list(f.kept), list(f.dropped), list(f.hits), edge
 
         self.test_info.setText(self.tr("추론 중…"))
         self._submit("test", job)
 
-    def _show_test(self, image, preds, edge: EdgeFilterConfig | None = None) -> None:
-        drawn = draw_comparison(image, [], [p.shape for p in preds], max_side=1200)
+    def _show_test(self, image, preds, dropped=(), hits=(), edge: EdgeFilterConfig | None = None) -> None:
+        drawn = draw_comparison(image, [], [p.shape for p in preds], max_side=1200,
+                                dropped=[p.shape for p in dropped], edges=[(h, p.shape) for p, h in zip(preds, hits)])
         pix = QPixmap.fromImage(numpy_to_qimage(drawn))
         self.test_view.setStyleSheet("")
         self.test_view.setPixmap(pix.scaled(self.test_view.size(), Qt.AspectRatioMode.KeepAspectRatio,
@@ -489,7 +555,8 @@ class ResultPanel(QWidget):
                  for p in sorted(preds, key=lambda p: -p.score)]
         self.test_info.setText(self.tr("{0} · 검출 {1}개 (conf ≥ {2:.2f})").format(
             self.test_path.name if self.test_path else "", len(preds), self.conf_value)
-            + self.tiling_note() + self.edge_note(edge) + ("\n" + ", ".join(lines) if lines else ""))
+            + self.tiling_note() + self.edge_note(edge) + self.dropped_note(len(dropped))
+            + ("\n" + ", ".join(lines) if lines else ""))
         self.last_test_predictions = preds
 
     # ---- suggestions (F2.8 ①, F5.5) ------------------------------------------------------------------

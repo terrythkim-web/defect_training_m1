@@ -103,6 +103,8 @@ class ImageResult:
     predictions: list[Prediction]
     matched: list[bool] = field(default_factory=list)  # per prediction: true positive?
     missed: list[bool] = field(default_factory=list)  # per ground truth: not found?
+    dropped: list[Prediction] = field(default_factory=list)  # removed by the edge filter (F9)
+    edge_hits: list = field(default_factory=list)  # edge_band.EdgeHit per kept prediction (F9)
 
     @property
     def tp(self) -> int:

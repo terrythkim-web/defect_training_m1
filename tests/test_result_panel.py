@@ -412,3 +412,63 @@ def test_results_show_the_filter_they_were_predicted_with(window, panel, qapp):
     panel.suggest()
     assert wait_until(qapp, lambda: "제안 완료" in panel.suggest_status.text())
     assert "테두리 필터" not in panel.suggest_status.text()
+
+
+def test_edge_box_follows_project_and_refilters_without_predicting(window, panel, qapp, monkeypatch):
+    """Turning the filter on after an evaluation re-filters the cached predictions; the model is not
+    run again. The setting is stored in the project (marked unsaved)."""
+    from defect_inspection.core.edge_filter_config import EdgeFilterConfig
+
+    assert not panel.edge_box.isChecked() and panel.edge_box.isEnabled()
+    panel.evaluate()
+    assert wait_until(qapp, lambda: panel.results)
+    found = sum(len(r.predictions) for r in panel.results)
+    assert found and all(not r.dropped for r in panel.results)
+
+    calls = []
+    original = BlobPredictor.predict
+    monkeypatch.setattr(BlobPredictor, "predict", lambda self, *a, **k: calls.append(1) or original(self, *a, **k))
+    window.project_dirty = False
+    panel.edge_box.setChecked(True)
+    assert window.project.config.edge_filter.enabled and window.project_dirty
+    assert wait_until(qapp, lambda: panel.results_edge is not None and panel.results_edge.enabled)
+    assert calls == []
+    assert all(not r.predictions for r in panel.results)  # blobs lie on no edge line
+    assert sum(len(r.dropped) for r in panel.results) == found
+    assert f"테두리 필터로 제외 {found}" in panel.summary.text()
+    assert panel.grid.count() == len(panel.results)
+
+    panel.edge_box.setChecked(False)
+    assert wait_until(qapp, lambda: not panel.results_edge.enabled)
+    assert sum(len(r.predictions) for r in panel.results) == found and calls == []
+
+    other = EdgeFilterConfig(enabled=True, touch_px=4)
+    window.project.config.edge_filter = other
+    panel.set_project(window.project)
+    assert panel.edge_box.isChecked() and panel.edge_box.touch.value() == 4
+
+
+def test_test_image_shows_dropped_predictions(panel, qapp, tmp_path):
+    from defect_inspection.core.edge_filter_config import EdgeFilterConfig
+
+    panel.project.config.edge_filter = EdgeFilterConfig(enabled=True)
+    img = np.full((S, S, 3), 200, np.uint8)
+    cv2.circle(img, (40, 40), 12, (30, 30, 30), -1)
+    imwrite_unicode(tmp_path / "t.png", img)
+    panel.test_image(tmp_path / "t.png")
+    assert wait_until(qapp, lambda: "검출 0개" in panel.test_info.text())
+    assert "테두리 필터로 제외 1개" in panel.test_info.text()
+
+
+def test_edge_check_menu_lists_labels_and_opens_image(window, qapp):
+    """도구 → 테두리 검사: the blob labels lie on no edge, so every label is reported as dropped."""
+    assert window.act_check_edges.isEnabled()
+    window.act_check_edges.trigger()
+    dialog = window.edge_check_dialog
+    n = sum(window.project.label_status(e).confirmed for e in window.project.config.images)
+    assert wait_until(qapp, lambda: dialog.table.rowCount() == n > 0)
+    assert "0 / {0}".format(n) in dialog.summary.text()
+    path = dialog.table.item(0, 0).text()
+    dialog.table.cellDoubleClicked.emit(0, 0)
+    assert window.image_panel.current_path() == path
+    dialog.close()

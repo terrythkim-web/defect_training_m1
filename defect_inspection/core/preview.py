@@ -77,10 +77,14 @@ def augment_previews(image8: np.ndarray, annotations: ImageAnnotations, config: 
 # named in the UI legend; predictions also carry their score as text.
 GT_COLOR = "#2a78d6"  # blue
 PRED_COLOR = "#eb6834"  # orange
+DROPPED_COLOR = "#9a9a9a"  # grey: predictions removed by the edge filter (F9)
+EDGE_COLOR = "#1baf7a"  # green: the outermost edge line a kept prediction sits on (F9)
 
 
-def draw_comparison(image8: np.ndarray, ground_truth: list, predictions: list, max_side: int | None = None) -> np.ndarray:
-    """BGR image with ground-truth outlines (blue) and predictions (orange + score)."""
+def draw_comparison(image8: np.ndarray, ground_truth: list, predictions: list, max_side: int | None = None,
+                    dropped: list = (), edges: list = ()) -> np.ndarray:
+    """BGR image with ground-truth outlines (blue) and predictions (orange + score); edge filter (F9):
+    `dropped` shapes in grey, `edges` = (EdgeHit, shape) pairs as a green line under the shape."""
     out = cv2.cvtColor(image8, cv2.COLOR_GRAY2BGR) if image8.ndim == 2 else image8.copy()
     scale = 1.0
     if max_side is not None and max(out.shape[:2]) > max_side:
@@ -93,6 +97,17 @@ def draw_comparison(image8: np.ndarray, ground_truth: list, predictions: list, m
         pts = np.round((np.array(shape.to_points(), np.float32) * scale - 0.5) * 16).astype(np.int32)
         cv2.polylines(out, [pts], True, color, thickness, cv2.LINE_AA, shift=4)
 
+    for shape in dropped:
+        outline(shape, _bgr(DROPPED_COLOR))
+    for hit, shape in edges:
+        x1, y1, x2, y2 = shape.bounds()
+        reach = max(x2 - x1, y2 - y1) / 2  # the line beside the box, where the rule measured it
+        if hit.axis == "h":
+            a, b = (x1 - reach, hit.position), (x2 + reach, hit.position)
+        else:
+            a, b = (hit.position, y1 - reach), (hit.position, y2 + reach)
+        cv2.line(out, (round(a[0] * scale), round(a[1] * scale)), (round(b[0] * scale), round(b[1] * scale)),
+                 _bgr(EDGE_COLOR), thickness, cv2.LINE_AA)
     for shape in ground_truth:
         outline(shape, _bgr(GT_COLOR))
     for shape in predictions:

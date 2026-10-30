@@ -146,3 +146,72 @@ def test_comparison_uses_one_snapshot_for_every_run(tmp_path):
     results = C.compare_runs(p, runs, make_predictor=lambda w, s, d: BlobModel([]), devices=[],
                              progress=edit_midway)
     assert [r.edge_filter["touch_px"] for r in results] == [5, 5]
+
+
+# ---- step 4: refiltering cached results, label check, overlay ------------------------------------
+
+def edge_project(tmp_path):
+    """Project with one panel image: one label on the edge, one inside."""
+    from defect_inspection.core.annotation import ImageAnnotations
+    from defect_inspection.core.project import Project
+    from defect_inspection.platform_utils import imwrite_unicode
+
+    src = tmp_path / "src"
+    src.mkdir()
+    imwrite_unicode(src / "panel.png", panel())
+    p = Project.create(tmp_path / "p", color_mode="grayscale")
+    p.add_class("crack")
+    (entry,) = p.add_images([src / "panel.png"])
+    gt = [BBox(class_id=0, x1=180, y1=EDGE_ROW - 15, x2=220, y2=EDGE_ROW + 15),
+          BBox(class_id=0, x1=180, y1=385, x2=220, y2=415)]
+    p.save_labels(ImageAnnotations(image=entry.path, width=512, height=1024, shapes=gt))
+    return p, entry.path, gt
+
+
+def test_apply_edge_filter_refilters_cached_results(tmp_path):
+    from defect_inspection.core.edge_filter import apply_edge_filter
+    from defect_inspection.core.evaluate import ImageResult
+
+    p, path, gt = edge_project(tmp_path)
+    raw = [ImageResult(path, 512, 1024, gt, [INSIDE, ON_EDGE])]
+    (r,) = apply_edge_filter(p, raw, ON)
+    assert r.predictions == [ON_EDGE] and r.dropped == [INSIDE] and len(r.edge_hits) == 1
+    assert r.matched == [True] and r.missed == [False, True]  # inside label is now a miss
+    assert raw[0].predictions == [INSIDE, ON_EDGE]  # the cached raw results are not changed
+    assert apply_edge_filter(p, raw, EdgeFilterConfig()) == raw  # off: unfiltered
+
+
+def test_apply_edge_filter_progress_and_cancel(tmp_path):
+    from defect_inspection.core.edge_filter import apply_edge_filter
+    from defect_inspection.core.evaluate import ImageResult
+
+    p, path, gt = edge_project(tmp_path)
+    raw = [ImageResult(path, 512, 1024, gt, [ON_EDGE])] * 3
+    seen = []
+    assert len(apply_edge_filter(p, raw, ON, progress=lambda d, t: seen.append((d, t)))) == 3
+    assert seen[-1] == (3, 3)
+    assert apply_edge_filter(p, raw, ON, cancel=lambda: True) == []
+
+
+def test_check_labels_judges_every_confirmed_label(tmp_path):
+    from defect_inspection.core.edge_filter import check_labels
+
+    p, path, gt = edge_project(tmp_path)
+    rows = check_labels(p, EdgeFilterConfig())  # judged whether or not the filter is on
+    assert [(r.path, r.class_name, r.passed) for r in rows] == [(path, "crack", True), (path, "crack", False)]
+    assert rows[0].bounds == gt[0].bounds() and abs(rows[0].hit.position - EDGE_ROW) <= 2
+    assert rows[1].hit is None
+
+
+def test_overlay_draws_dropped_boxes_and_edge_lines():
+    from defect_inspection.core.preview import draw_comparison
+
+    img = np.full((200, 200), 200, np.uint8)
+    hit = filter_predictions(panel(), [ON_EDGE], ON).hits[0]
+    shifted = Prediction(BBox(class_id=0, x1=80, y1=80, x2=120, y2=120, status="suggested", source="model", score=0.5))
+    plain = draw_comparison(img, [], [])
+    dropped = draw_comparison(img, [], [], dropped=[shifted.shape])
+    assert (plain != dropped).any() and (dropped[80:121, 80:121] != 200).any()
+    edged = draw_comparison(np.full((1024, 512), 200, np.uint8), [], [ON_EDGE.shape], edges=[(hit, ON_EDGE.shape)])
+    no_edge = draw_comparison(np.full((1024, 512), 200, np.uint8), [], [ON_EDGE.shape])
+    assert (edged != no_edge).any()

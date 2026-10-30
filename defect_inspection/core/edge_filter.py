@@ -12,12 +12,15 @@ the samples (0.14 s per image at conf 0.01); up to `max_det` boxes per image at 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Callable
 
 import numpy as np
 
 from defect_inspection.core.edge_band import EdgeHit, edge_under_box
 from defect_inspection.core.edge_filter_config import EdgeFilterConfig
+from defect_inspection.core.evaluate import ImageResult, load_training_image, match
+from defect_inspection.core.project import Project
 
 
 @dataclass(frozen=True)
@@ -64,3 +67,63 @@ def settings_text(cfg: EdgeFilterConfig) -> str:
 def with_edge_filter(predictor, cfg: EdgeFilterConfig):
     """`predictor` wrapped in the edge filter if `cfg.enabled`, else unchanged."""
     return EdgeFilteredPredictor(predictor, cfg) if cfg.enabled else predictor
+
+
+def apply_edge_filter(project: Project, results: list[ImageResult], cfg: EdgeFilterConfig,
+                      progress: Callable[[int, int], None] | None = None,
+                      cancel: Callable[[], bool] | None = None) -> list[ImageResult]:
+    """Unfiltered Val results → new results with `cfg` applied (kept / dropped / edge hits), without
+    predicting again: the Result tab keeps the raw predictions and re-filters on a settings change.
+    `cfg` off → `results` unchanged. Cancelled → []."""
+    if not cfg.enabled:
+        return results
+    out = []
+    for i, r in enumerate(results, 1):
+        if cancel is not None and cancel():
+            return []
+        image = load_training_image(project, r.path)
+        if image is None:
+            out.append(r)  # deleted since it was predicted: shown as it was
+        else:
+            f = filter_predictions(image, r.predictions, cfg)
+            matched, missed = match(r.ground_truth, list(f.kept))
+            out.append(replace(r, predictions=list(f.kept), matched=matched, missed=missed,
+                               dropped=list(f.dropped), edge_hits=list(f.hits)))
+        if progress is not None:
+            progress(i, len(results))
+    return out
+
+
+@dataclass(frozen=True)
+class LabelCheck:
+    """One confirmed label judged by the edge rule ("테두리 검사"): labels are the truth, so a label
+    that fails shows where the rule would hide a real defect."""
+
+    path: str
+    class_name: str
+    bounds: tuple[float, float, float, float]
+    hit: EdgeHit | None
+
+    @property
+    def passed(self) -> bool:
+        return self.hit is not None
+
+
+def check_labels(project: Project, cfg: EdgeFilterConfig,
+                 progress: Callable[[int, int], None] | None = None,
+                 cancel: Callable[[], bool] | None = None) -> list[LabelCheck]:
+    """Every confirmed label of every project image, judged with `cfg` (also when it is off)."""
+    names = [c.name for c in project.config.classes]
+    entries = [e for e in project.config.images if project.label_status(e).confirmed]
+    out = []
+    for i, entry in enumerate(entries, 1):
+        if cancel is not None and cancel():
+            break
+        image = load_training_image(project, entry.path)
+        if image is not None:
+            for shape in project.load_labels(entry).confirmed():
+                name = names[shape.class_id] if shape.class_id < len(names) else str(shape.class_id)
+                out.append(LabelCheck(entry.path, name, shape.bounds(), edge_under_box(image, shape.bounds(), cfg)))
+        if progress is not None:
+            progress(i, len(entries))
+    return out
