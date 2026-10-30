@@ -382,3 +382,33 @@ def test_crop_run_uses_tiling(window, panel, qapp, monkeypatch, tmp_path):
     assert "타일링 추론" in panel.test_info.text()
     (box,) = [p.shape.bounds() for p in panel.last_test_predictions]
     assert box == pytest.approx((60, 60, 81, 81), abs=1)
+
+
+def test_edge_filter_applies_to_val_grid_and_suggestions(window, panel, qapp):
+    """F9.3: the blobs lie on no edge line, so with the filter on nothing is found or suggested."""
+    from defect_inspection.core.edge_filter import EdgeFilteredPredictor
+    from defect_inspection.core.edge_filter_config import EdgeFilterConfig
+
+    window.project.config.edge_filter = EdgeFilterConfig(enabled=True)
+    assert isinstance(panel._predictor(panel.current_run), EdgeFilteredPredictor)
+    panel.evaluate()
+    assert wait_until(qapp, lambda: panel.results)
+    assert all(not r.predictions for r in panel.results)
+    panel.suggest()
+    assert wait_until(qapp, lambda: "제안 완료" in panel.suggest_status.text())
+    assert not any(window.project.load_labels(e).suggestions() for e in window.project.config.images)
+    window.project.config.edge_filter = EdgeFilterConfig(enabled=False)
+    assert isinstance(panel._predictor(panel.current_run), BlobPredictor)
+
+
+def test_results_show_the_filter_they_were_predicted_with(window, panel, qapp):
+    from defect_inspection.core.edge_filter_config import EdgeFilterConfig
+
+    window.project.config.edge_filter = EdgeFilterConfig(enabled=True, touch_px=7)
+    panel.evaluate()
+    window.project.config.edge_filter = EdgeFilterConfig(enabled=False)  # edited after the click
+    assert wait_until(qapp, lambda: panel.results)
+    assert panel.results_edge.touch_px == 7 and "테두리 필터" in panel.summary.text()
+    panel.suggest()
+    assert wait_until(qapp, lambda: "제안 완료" in panel.suggest_status.text())
+    assert "테두리 필터" not in panel.suggest_status.text()

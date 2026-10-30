@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
 )
 
 from defect_inspection.core.crop import TiledPredictor
+from defect_inspection.core.edge_filter import EdgeFilteredPredictor, settings_text, with_edge_filter
+from defect_inspection.core.edge_filter_config import EdgeFilterConfig
 from defect_inspection.core.evaluate import (
     ImageResult,
     Predictor,
@@ -78,6 +80,7 @@ class ResultPanel(QWidget):
         self.project: Project | None = None
         self.runs: list[RunInfo] = []
         self.results: list[ImageResult] = []
+        self.results_edge: EdgeFilterConfig | None = None  # edge filter the results were predicted with
         self.before_suggest: Callable[[], None] = lambda: None
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="result")
         self._predictors: dict[tuple[str, float], Predictor] = {}
@@ -276,7 +279,22 @@ class ResultPanel(QWidget):
             self._fill_grid()
 
     # ---- worker ---------------------------------------------------------------------------
-    def _predictor(self, run: RunInfo) -> Predictor | TiledPredictor:
+    def _predictor(self, run: RunInfo, edge: EdgeFilterConfig | None = None
+                   ) -> Predictor | TiledPredictor | EdgeFilteredPredictor:
+        """The run's model wrapped in the edge filter (F9.3) when `edge` (default: the project's
+        settings now) is on; jobs pass `_edge_snapshot()` taken on the UI thread when they start."""
+        return with_edge_filter(self._model(run), edge or self._edge_snapshot())
+
+    def _edge_snapshot(self) -> EdgeFilterConfig:
+        return self.project.config.edge_filter.model_copy()
+
+    def edge_note(self, edge: EdgeFilterConfig | None) -> str:
+        """' · 테두리 필터 …' when the shown results were filtered, '' otherwise."""
+        if edge is None or not edge.enabled:
+            return ""
+        return self.tr(" · 테두리 필터 ({0})").format(settings_text(edge))
+
+    def _model(self, run: RunInfo) -> Predictor | TiledPredictor:
         """Cached per best.pt; crop runs are wrapped in tiling inference (F7.6)."""
         weights = run.best_weights
         key = (str(weights), weights.stat().st_mtime)
@@ -336,12 +354,12 @@ class ResultPanel(QWidget):
             QMessageBox.warning(self, self.tr("결과"), f"{type(payload).__name__}: {payload}")
             return
         if kind == "evaluate":
-            self.results = payload
+            self.results, self.results_edge = payload
             self._fill_grid()
         elif kind == "test":
             self._show_test(*payload)
         elif kind == "suggest":
-            self._suggest_done(payload)
+            self._suggest_done(*payload)
 
     @property
     def busy(self) -> bool:
@@ -360,11 +378,11 @@ class ResultPanel(QWidget):
         if not paths:
             self.summary.setText(self.tr("검증 이미지가 없습니다. 데이터셋을 빌드했는지 확인하세요."))
             return
-        iou = self.iou_value
+        iou, edge = self.iou_value, self._edge_snapshot()
 
         def job(progress, cancel):
-            predictor = self._predictor(run)
-            return evaluate_images(project, predictor, paths, EVAL_CONF, iou, progress, cancel)
+            predictor = self._predictor(run, edge)
+            return evaluate_images(project, predictor, paths, EVAL_CONF, iou, progress, cancel), edge
 
         self.summary.setText(self.tr("검증 이미지 {0}장 예측 중…").format(len(paths)))
         self._submit("evaluate", job)
@@ -389,7 +407,7 @@ class ResultPanel(QWidget):
         self.summary.setText(self.tr(
             "검증 {0}장 · conf {1:.2f}: 맞음 {2}, 오검 {3}, 미검 {4} · precision {5:.2f}, recall {6:.2f} "
             "(IoU ≥ 0.5, 클래스 일치 기준)").format(len(shown), self.conf_value, tp, fp, fn, precision, recall)
-            + self.tiling_note())
+            + self.tiling_note() + self.edge_note(self.results_edge))
         key = self.filter_combo.currentData()
         for r in shown:
             if not _filter_ok(r, key):
@@ -447,20 +465,20 @@ class ResultPanel(QWidget):
         if run is None or project is None or self._busy:
             return
         self.test_path = path
-        conf, iou = self.conf_value, self.iou_value
+        conf, iou, edge = self.conf_value, self.iou_value, self._edge_snapshot()
 
         def job(progress, cancel):
             raw = imread_unicode(path)
             if raw is None:
                 raise OSError(f"이미지를 읽을 수 없습니다: {path}")
             image = to_training_8bit(raw, project.channels)
-            preds = self._predictor(run).predict(image, conf, iou)
-            return image, preds
+            preds = self._predictor(run, edge).predict(image, conf, iou)
+            return image, preds, edge
 
         self.test_info.setText(self.tr("추론 중…"))
         self._submit("test", job)
 
-    def _show_test(self, image, preds) -> None:
+    def _show_test(self, image, preds, edge: EdgeFilterConfig | None = None) -> None:
         drawn = draw_comparison(image, [], [p.shape for p in preds], max_side=1200)
         pix = QPixmap.fromImage(numpy_to_qimage(drawn))
         self.test_view.setStyleSheet("")
@@ -471,7 +489,7 @@ class ResultPanel(QWidget):
                  for p in sorted(preds, key=lambda p: -p.score)]
         self.test_info.setText(self.tr("{0} · 검출 {1}개 (conf ≥ {2:.2f})").format(
             self.test_path.name if self.test_path else "", len(preds), self.conf_value)
-            + self.tiling_note() + ("\n" + ", ".join(lines) if lines else ""))
+            + self.tiling_note() + self.edge_note(edge) + ("\n" + ", ".join(lines) if lines else ""))
         self.last_test_predictions = preds
 
     # ---- suggestions (F2.8 ①, F5.5) ------------------------------------------------------------------
@@ -485,18 +503,19 @@ class ResultPanel(QWidget):
         if not paths:
             self.suggest_status.setText(self.tr("미라벨 이미지가 없습니다"))
             return False
-        conf, iou = self.conf_value, self.iou_value
+        conf, iou, edge = self.conf_value, self.iou_value, self._edge_snapshot()
 
         def job(progress, cancel):
-            return generate_suggestions(project, self._predictor(run), paths, conf, iou, progress, cancel)
+            return generate_suggestions(project, self._predictor(run, edge), paths, conf, iou, progress, cancel), edge
 
         self.suggest_status.setText(self.tr("{0}장에 제안 생성 중… ({1})").format(len(paths), run.run_id))
         self._submit("suggest", job)
         return True
 
-    def _suggest_done(self, report: SuggestionReport) -> None:
+    def _suggest_done(self, report: SuggestionReport, edge: EdgeFilterConfig | None = None) -> None:
         self.suggest_status.setText(self.tr(
             "제안 완료: {0}장 중 {1}장에 제안 {2}개 (conf ≥ {3:.2f}). 이미지 목록의 '제안 대기' 필터로 검토하세요.")
-            .format(report.images, report.with_suggestions, report.suggestions, self.conf_value))
+            .format(report.images, report.with_suggestions, report.suggestions, self.conf_value)
+            + self.edge_note(edge))
         self.labels_changed.emit(report.paths)
         self.refresh_unlabeled()

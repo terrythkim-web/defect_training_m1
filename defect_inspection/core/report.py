@@ -231,6 +231,11 @@ def run_conditions(project: Project, r: RunComparison, run_dir: Path) -> dict[st
                               f"{round(100 * (crop.get('jitter') or 0))}% · 배경 비율 {crop.get('background_ratio')}"
         rows["타일링 추론"] = f"{tiling.tile_size} px, overlap {tiling.overlap_px} px"
         rows["crop 증강 수"] = crop.get("multiplier")
+    if r.edge_filter:
+        from defect_inspection.core.edge_filter import settings_text
+        from defect_inspection.core.edge_filter_config import EdgeFilterConfig
+
+        rows["테두리 필터"] = settings_text(EdgeFilterConfig.model_validate(r.edge_filter))
     return rows
 
 

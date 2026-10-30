@@ -25,6 +25,7 @@ import numpy as np
 
 from defect_inspection.core.annotation import BBox, Polygon
 from defect_inspection.core.dataset import select_images, split_images
+from defect_inspection.core.edge_filter_config import EdgeFilterConfig
 from defect_inspection.core.evaluate import MATCH_IOU, Prediction, box_iou, load_training_image, match  # noqa: F401 (match re-exported)
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import EpochSeries, RunSpec, TrainConfig, load_spec, read_events, read_status, weights_paths
@@ -105,6 +106,7 @@ class RunComparison:
     training: TrainingInfo
     series: dict[str, Any]  # {"epochs": [...], "values": {key: [...]}} for curve overlays
     images: list[ImagePredictions] = field(default_factory=list, repr=False)
+    edge_filter: dict[str, Any] | None = None  # EdgeFilterConfig the predictions were filtered with (F9)
 
     def summary(self) -> dict[str, Any]:
         """JSON-friendly without the per-image predictions (for reports / logs)."""
@@ -360,8 +362,12 @@ def evaluate_run(project: Project, run_dir: Path, paths: list[str], conf: float 
                  make_predictor: PredictorFactory = default_factory,
                  devices: list[tuple[str, str]] | None = None,
                  progress: Callable[[int, int], None] | None = None,
-                 cancel: Callable[[], bool] | None = None) -> RunComparison:
-    """Fair re-evaluation of one run on `paths` (original images), plus speed and training info."""
+                 cancel: Callable[[], bool] | None = None,
+                 edge_filter: EdgeFilterConfig | None = None) -> RunComparison:
+    """Fair re-evaluation of one run on `paths` (original images), plus speed and training info.
+    `edge_filter` (default: the project's settings now) applies to the predictions (F9); speed is the
+    model's alone."""
+    from defect_inspection.core.edge_filter import with_edge_filter
     from defect_inspection.platform_utils import inference_devices
 
     run_dir = Path(run_dir)
@@ -371,7 +377,9 @@ def evaluate_run(project: Project, run_dir: Path, paths: list[str], conf: float 
         raise FileNotFoundError(f"best.pt가 없습니다: {run_dir.name}")
     if spec.nc != len(project.config.classes) or spec.channels != project.channels:
         raise ValueError(f"{spec.run_id}: 현재 프로젝트의 클래스/색 모드와 다르게 학습된 run입니다")
-    images = predict_images(project, make_predictor(best, spec, None), paths, iou, progress, cancel)
+    edge_cfg = (edge_filter or project.config.edge_filter).model_copy()
+    predictor = with_edge_filter(make_predictor(best, spec, None), edge_cfg)
+    images = predict_images(project, predictor, paths, iou, progress, cancel)
     metrics = compute_metrics(images, [c.name for c in project.config.classes], conf)
 
     speed: dict[str, float] = {}
@@ -388,6 +396,7 @@ def evaluate_run(project: Project, run_dir: Path, paths: list[str], conf: float 
         own_metrics=status.get("final_metrics") or status.get("metrics") or {},
         speed_ms=speed, training=training_info(project, run_dir, spec),
         series={"epochs": series.epochs, "values": series.values}, images=images,
+        edge_filter=edge_cfg.model_dump(mode="json") if edge_cfg.enabled else None,
     )
 
 
@@ -396,8 +405,9 @@ def compare_runs(project: Project, run_dirs: list[Path], conf: float = 0.25, iou
                  devices: list[tuple[str, str]] | None = None,
                  progress: Callable[[int, int, str], None] | None = None,
                  cancel: Callable[[], bool] | None = None) -> list[RunComparison]:
-    """Evaluate every run on the same Val images with the same thresholds (F8.2)."""
+    """Evaluate every run on the same Val images with the same thresholds and edge filter (F8.2, F9)."""
     paths = fair_val_images(project)
+    edge_filter = project.config.edge_filter.model_copy()  # edits during a long comparison don't count
     if not paths:
         raise ValueError("검증(Val) 이미지가 없습니다. 라벨된 이미지가 2장 이상 필요합니다.")
     out = []
@@ -406,7 +416,8 @@ def compare_runs(project: Project, run_dirs: list[Path], conf: float = 0.25, iou
             if progress is not None:
                 progress(k * total + done, len(run_dirs) * total, name)
 
-        out.append(evaluate_run(project, run_dir, paths, conf, iou, make_predictor, devices, step, cancel))
+        out.append(evaluate_run(project, run_dir, paths, conf, iou, make_predictor, devices, step, cancel,
+                                edge_filter))
         if cancel is not None and cancel():
             break
     return out

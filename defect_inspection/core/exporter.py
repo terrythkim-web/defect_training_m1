@@ -300,6 +300,17 @@ def crop_metadata(project: Project, spec: RunSpec) -> dict[str, Any] | None:
     }
 
 
+def edge_filter_metadata(project: Project) -> dict[str, Any] | None:
+    """The project's edge filter (F9), recorded so nobody expects it from the model: DefectLab drops
+    predictions off the outermost edge after inference, the exported model does not."""
+    cfg = project.config.edge_filter
+    if not cfg.enabled:
+        return None
+    return {"applied_in_model": False,
+            "note": "DefectLab 안(Result·제안·비교)에서만 예측 뒤에 적용됩니다. 이 모델의 출력에는 적용되지 않습니다.",
+            "settings": cfg.model_dump(mode="json")}
+
+
 def build_metadata(project: Project, spec: RunSpec, run_dir: Path, opts: ExportOptions,
                    verification: Verification | None, notes: list[str]) -> dict[str, Any]:
     status = read_status(run_dir)
@@ -339,6 +350,7 @@ def build_metadata(project: Project, spec: RunSpec, run_dir: Path, opts: ExportO
         "train": {"epochs": spec.train.epochs, "imgsz": spec.train.imgsz, "dataset": spec.train.dataset},
         "metrics": status.get("final_metrics") or status.get("metrics") or {},
         "crop": crop_metadata(project, spec),
+        "edge_filter": edge_filter_metadata(project),
         "verification": None if verification is None else asdict(verification),
         "notes": notes,
     }
