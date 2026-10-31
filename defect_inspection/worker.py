@@ -32,6 +32,7 @@ from defect_inspection.core.trainer import (
     weights_paths,
     write_status,
 )
+from defect_inspection.platform_utils import stdin_lines
 
 
 class StopTraining(Exception):
@@ -53,7 +54,7 @@ class Emitter:
 
 def watch_stdin(stop: threading.Event) -> None:
     """Set `stop` when the parent writes `stop` (or closes stdin, i.e. the UI went away)."""
-    for line in sys.stdin:
+    for line in stdin_lines():
         if line.strip().lower() == "stop":
             stop.set()
             return

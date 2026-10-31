@@ -1,3 +1,7 @@
+import io
+import os
+import sys
+
 import numpy as np
 import pytest
 
@@ -221,3 +225,82 @@ def test_accelerator_probe_runs_once_across_threads(monkeypatch):
     for t in threads:
         t.join()
     assert calls == [1] and results == ["mps"] * 8
+
+
+# ---- stdin stop requests without a blocking pipe read (Windows) ---------------------------------
+
+def test_polled_lines_split_reads_into_lines():
+    """Windows reads the worker's stdin pipe only when bytes are waiting: a thread blocked in
+    ReadFile on the pipe made spawning DataLoader workers (they inherit it) hang forever."""
+    r, w = os.pipe()
+    os.write(w, "noise\nST".encode() + "OP\n끝".encode())
+    os.close(w)
+    waits = iter([0, 8, 0, 0, 6, None])  # nothing yet, then the bytes in two chunks, then EOF
+    slept = []
+    lines = list(pu._polled_lines(r, lambda: next(waits), 0.2, slept.append))
+    os.close(r)
+    assert lines == ["noise\n", "STOP\n", "끝"]
+    assert slept == [0.2, 0.2, 0.2]
+
+
+def test_stdin_lines_reads_a_plain_stream():
+    assert list(pu.stdin_lines(io.StringIO("a\nstop\n"))) == ["a\n", "stop\n"]
+
+
+def test_stdin_lines_without_stdin(monkeypatch):
+    monkeypatch.setattr(pu.sys, "stdin", None)
+    assert list(pu.stdin_lines()) == []
+
+
+def run_script(tmp_path, code):
+    import subprocess
+
+    script = tmp_path / "script.py"
+    script.write_text(code, encoding="utf-8")
+    return subprocess.Popen([sys.executable, str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+
+
+SPAWN_WHILE_WATCHING = """
+import multiprocessing, os, threading, time
+from defect_inspection import platform_utils
+
+if __name__ == "__main__":
+    threading.Thread(target=lambda: list(platform_utils.stdin_lines()), daemon=True).start()
+    time.sleep(0.5)  # the watcher is now waiting for stdin
+    child = multiprocessing.get_context("spawn").Process(target=os.getpid)
+    child.start()
+    child.join(60)
+    print("child exit", child.exitcode, flush=True)
+"""
+
+
+def test_spawning_while_stdin_is_watched(tmp_path):
+    """The training worker's case: a thread waits for a stop line on the stdin PIPE (kept open)
+    while DataLoader workers are spawned. With a blocking read, Windows never started the child."""
+    import subprocess
+
+    proc = run_script(tmp_path, SPAWN_WHILE_WATCHING)
+    try:
+        proc.wait(timeout=120)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        pytest.fail("spawning a process hung while stdin was being read")
+    finally:
+        proc.stdin.close()
+    assert proc.stdout.read().strip() == "child exit 0"
+
+
+@pytest.mark.skipif(not pu.IS_WINDOWS, reason="PeekNamedPipe is Windows only")
+def test_windows_pipe_is_polled(tmp_path):
+    proc = run_script(tmp_path, "import sys\nfrom defect_inspection import platform_utils as p\n"
+                                "print(p._pipe_peeker(sys.stdin) is not None, flush=True)\n"
+                                "print(list(p.stdin_lines()), flush=True)\n")
+    try:
+        assert proc.stdout.readline().strip() == "True"
+        proc.stdin.write("x\nstop\n")
+        proc.stdin.close()
+        assert proc.stdout.readline().strip() == "['x\\n', 'stop\\n']"
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)

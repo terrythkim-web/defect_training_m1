@@ -143,11 +143,24 @@ def test_missing_masks_are_explained(tmp_path):
         unet.train_unet(spec, tmp_path, lambda e: None, lambda: False, False, Stop)
 
 
-def test_worker_process_trains_a_unet_run(tmp_path):
-    """The real worker entry point picks the U-Net++ loop from the model key. With DataLoader workers:
-    forked loader workers hung on the stdin lock held by the worker's stop-watcher thread."""
+def kill_tree(proc) -> None:
+    """Kill a worker and its DataLoader processes (they hold its stdout open)."""
     import subprocess
     import sys
+
+    if sys.platform.startswith("win"):
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        proc.kill()
+
+
+def test_worker_process_trains_a_unet_run(tmp_path):
+    """The real worker entry point picks the U-Net++ loop from the model key. With DataLoader workers:
+    forked loader workers hung on the stdin lock held by the worker's stop-watcher thread, and on
+    Windows spawning them hung while that thread was blocked reading the stdin pipe."""
+    import subprocess
+    import sys
+    import threading
 
     import yaml
 
@@ -157,9 +170,23 @@ def test_worker_process_trains_a_unet_run(tmp_path):
     (run_dir / "config.yaml").write_text(yaml.safe_dump(spec.model_dump(mode="json")), encoding="utf-8")
     proc = subprocess.Popen([sys.executable, "-m", "defect_inspection.worker", "--run-dir", str(run_dir)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    out = proc.stdout.read()  # stdin stays open: a closed stdin means "app gone, stop"
-    proc.wait(timeout=300)
-    proc.stdin.close()
+    # stdin stays open (a closed stdin means "app gone, stop"), so no communicate(). Lines are read
+    # on a thread: a hang fails here with the worker's output, not after 6 hours of CI.
+    lines = []
+    reader = threading.Thread(target=lambda: lines.extend(proc.stdout), daemon=True)
+    reader.start()
+    try:
+        reader.join(timeout=300)
+        if reader.is_alive():
+            kill_tree(proc)
+            reader.join(timeout=10)
+            pytest.fail("worker hung:\n" + "".join(lines))
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            kill_tree(proc)
+        proc.stdin.close()
+    out = "".join(lines)
     assert proc.returncode == 0, out
     assert read_status(run_dir)["state"] == "finished"
     assert '"type": "final"' in out

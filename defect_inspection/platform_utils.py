@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 import warnings
 from pathlib import Path
 
@@ -305,3 +306,60 @@ def pick_korean_font() -> str | None:
         stacklevel=2,
     )
     return None
+
+
+# ---- stdin of the training worker -------------------------------------------------------------
+
+STDIN_POLL_SEC = 0.2  # how often the worker looks for a stop request on Windows
+
+
+def stdin_lines(stream=None, poll_sec: float = STDIN_POLL_SEC):
+    """Lines of `stream` (default sys.stdin) until EOF, for the worker's stop watcher thread.
+
+    On Windows a thread blocked in ReadFile on a synchronous pipe makes every other operation on
+    that pipe wait — including a new process inheriting it: training with DataLoader workers
+    (spawned) hung before the first batch. So a pipe is only read when PeekNamedPipe says bytes
+    are waiting. Elsewhere (and for a console or file) it is a plain blocking read."""
+    stream = sys.stdin if stream is None else stream
+    if stream is None:  # no stdin at all (windowed exe started without one): nothing to read
+        return
+    peek = _pipe_peeker(stream) if IS_WINDOWS else None
+    if peek is None:
+        yield from stream
+        return
+    yield from _polled_lines(stream.fileno(), peek, poll_sec, time.sleep)
+
+
+def _pipe_peeker(stream):
+    """A function giving the bytes waiting in `stream`'s pipe (None at EOF), or None if no pipe."""
+    try:
+        import _winapi
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        _winapi.PeekNamedPipe(handle, 0)
+    except (ImportError, OSError, ValueError, AttributeError):
+        return None  # no pipe (console, file), or already closed: read it the plain way
+
+    def peek() -> int | None:
+        try:
+            return _winapi.PeekNamedPipe(handle, 0)[0]  # size 0 → (bytes waiting, bytes left)
+        except OSError:  # broken pipe = the app closed stdin
+            return None
+
+    return peek
+
+
+def _polled_lines(fd: int, peek, poll_sec: float, sleep):
+    pending = b""
+    while (waiting := peek()) is not None:
+        if waiting == 0:
+            sleep(poll_sec)
+            continue
+        data = os.read(fd, waiting)
+        if not data:
+            break
+        *lines, pending = (pending + data).split(b"\n")
+        yield from (line.decode("utf-8", "replace") + "\n" for line in lines)
+    if pending:
+        yield pending.decode("utf-8", "replace")
