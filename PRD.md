@@ -237,7 +237,7 @@
 - 한글 폰트: Apple SD Gothic Neo. 설정·캐시 위치: `QStandardPaths`(~/Library/Application Support, ~/Library/Caches)
 - 단축키: Qt가 Ctrl을 ⌘(Command)로 자동 매핑
 - 배포: PyInstaller로 `.app`/`.dmg`. 개발자 서명·공증이 없으면 첫 실행 시 Gatekeeper 경고(우클릭 → 열기)
-- 테스트: GitHub Actions `macos-14`(Apple Silicon)로 기능 테스트(CPU). GitHub 러너는 MPS(GPU)를 쓸 수 없으므로 속도·화면은 실제 M1에서 확인(`docs/mac_checklist.md`, `tools/bench_apple.py`)
+- 테스트: GitHub Actions `macos-15`(Apple Silicon, 2026-11 macos-14 종료로 변경)로 기능 테스트(CPU). GitHub 러너는 MPS(GPU)를 쓸 수 없으므로 속도·화면은 실제 M1에서 확인(`docs/mac_checklist.md`, `tools/bench_apple.py`)
 - 구현(21단계): 장치는 `platform_utils.resolve_device(요청, 용도)` 한 곳에서 정한다. "자동" → CUDA면 `0`, Mac이면 `mps`, 없으면 `cpu`. 학습·Result 예측·비교·SAM이 이 함수를 쓰고, ONNX 검증만 PyTorch와 ONNX Runtime을 같은 조건으로 비교하려고 항상 CPU. Train 탭 장치 목록은 Mac에서 "Apple GPU (MPS)", FP16 export는 CUDA 전용. Mac 키보드에는 Delete 키가 없어 ⌫가 (거절할 제안이 없으면) 선택한 라벨·ROI를 삭제. 버튼 툴팁의 단축키도 OS 표기(⌘0)로 표시. 설정 `~/Library/Application Support/DefectLab`, 캐시 `~/Library/Caches/DefectLab`. 실제 M1 확인 항목은 `docs/mac_checklist.md`
 - 구현(22단계): `packaging/defectlab_mac.spec` + `build_mac.sh` → `DefectLab.app`(ad-hoc 서명, `DEVELOPER_ID`/`NOTARY_PROFILE`이 있으면 서명·공증) + `.dmg`. Export 탭 형식에 CoreML(.mlpackage, macOS에서만 보임, 컬러 모델만, Core ML로 검증 IoU ≥ 0.9). `tools/bench_apple.py`: 학습 epoch CPU vs MPS, 추론(네트워크만) PyTorch CPU/MPS·ONNX Runtime CPU/CoreML EP·CoreML, 학습 1 step MLX vs PyTorch → 판단 줄 출력. MLX 네트워크(`tools/mlx_yolo.py`)는 PyTorch와 출력·loss·gradient가 일치함을 Linux CPU MLX로 테스트. **MLX 진행 여부는 사용자의 M1 측정 결과로 결정(미정)**
 - **MLX 평가 기준**: Ultralytics에는 MLX 지원이 없어 MLX 학습은 모델·loss·학습 루프 재구현 수준의 작업이다. M1에서 MPS 학습 속도를 측정하고, YOLO11n 학습 1 step(forward+backward)을 MLX로 만든 마이크로벤치와 비교해 **MLX가 의미 있게 빠를 때만(예: 1.5배 이상)** MLX 학습 엔진을 별도 단계로 계획한다. MLX는 Linux CPU 빌드도 있어 수치 정합성은 Linux에서도 검증 가능

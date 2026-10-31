@@ -9,9 +9,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 = Apple Silicon (M1). GitHub's Mac runners have no usable MPS GPU, so this is a
-        # CPU functional test; speed and MPS are checked on a real Mac (docs/mac_checklist.md).
-        os: [ubuntu-latest, windows-latest, macos-14]
+        # macos-15 = Apple Silicon (macos-14 images retire 2026-11-02). GitHub's Mac runners have no
+        # usable MPS GPU, so this is a CPU functional test; speed and MPS are checked on a real Mac
+        # (docs/mac_checklist.md).
+        os: [ubuntu-latest, windows-latest, macos-15]
         python-version: ["3.12"]
     runs-on: ${{ matrix.os }}
     env:

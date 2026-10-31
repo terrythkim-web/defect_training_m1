@@ -1,6 +1,6 @@
 # macOS (Apple Silicon) 확인 체크리스트
 
-Phase G(PRD 5.2, PROMPTS 21단계) 확인용이다. GitHub Actions의 `macos-14` 작업은 기능 테스트(CPU)만 하고 Mac GPU(MPS)는 쓰지 못하므로,
+Phase G(PRD 5.2, PROMPTS 21단계) 확인용이다. GitHub Actions의 `macos-15` 작업은 기능 테스트(CPU)만 하고 Mac GPU(MPS)는 쓰지 못하므로,
 **실제 M1 이후 Mac**에서 아래 항목을 확인한다. 테스트 폴더는 공백과 한글이 들어간 경로를 쓴다 (예: `~/Documents/검사 데이터/샘플 이미지`).
 확인이 끝나면 각 섹션의 메모 칸에 기록해 공유한다 (특히 5장의 학습 시간).
 
