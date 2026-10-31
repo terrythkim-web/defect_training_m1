@@ -27,9 +27,11 @@ TEXT_SECONDARY = "#52514e"
 GRID_ALPHA = 0.15
 
 LOSS_COMPONENTS = ["box", "cls", "dfl", "seg"]  # colour slots 1-4; others follow
-METRICS = [("precision", "Precision"), ("recall", "Recall"), ("mAP50", "mAP50"), ("mAP50-95", "mAP50-95")]
+# U-Net++ (semantic segmentation) reports IoU, Dice and recall(blob) instead of box metrics
+METRICS = [("precision", "Precision"), ("recall", "Recall"), ("mAP50", "mAP50"), ("mAP50-95", "mAP50-95"),
+           ("IoU", "IoU"), ("Dice", "Dice")]
 _LOSS_RE = re.compile(r"^(train|val)/(\w+?)_loss$")
-_METRIC_RE = re.compile(r"^metrics/(precision|recall|mAP50|mAP50-95)\((B|M)\)$")
+_METRIC_RE = re.compile(r"^metrics/(?:(precision|recall|mAP50|mAP50-95)\((B|M|blob)\)|(IoU|Dice))$")
 
 
 def loss_style(key: str) -> tuple[str, str, Qt.PenStyle] | None:
@@ -48,10 +50,15 @@ def metric_style(key: str) -> tuple[str, str, Qt.PenStyle] | None:
     m = _METRIC_RE.match(key)
     if not m:
         return None
-    name, kind = m.groups()
+    name, kind = _metric_parts(m)
     idx = [k for k, _ in METRICS].index(name)
-    label = dict(METRICS)[name] + (" (mask)" if kind == "M" else "")
-    return label, SERIES[idx], Qt.PenStyle.SolidLine if kind == "B" else Qt.PenStyle.DashLine
+    label = dict(METRICS)[name] + {"M": " (mask)", "blob": " (결함 덩어리)"}.get(kind, "")
+    return label, SERIES[idx], Qt.PenStyle.DashLine if kind == "M" else Qt.PenStyle.SolidLine
+
+
+def _metric_parts(m: re.Match) -> tuple[str, str | None]:
+    box_name, kind, seg_name = m.groups()
+    return (box_name, kind) if box_name else (seg_name, None)
 
 
 def _sort_key(key: str) -> tuple:
@@ -61,7 +68,8 @@ def _sort_key(key: str) -> tuple:
         return (0, LOSS_COMPONENTS.index(comp) if comp in LOSS_COMPONENTS else 9, split != "train")
     m = _METRIC_RE.match(key)
     if m:
-        return (1, [k for k, _ in METRICS].index(m.group(1)), m.group(2) != "B")
+        name, kind = _metric_parts(m)
+        return (1, [k for k, _ in METRICS].index(name), kind not in ("B", None))
     return (2, key)
 
 

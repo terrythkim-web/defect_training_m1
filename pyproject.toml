@@ -24,6 +24,7 @@ dependencies = [
     "matplotlib",
     "pydantic>=2",
     "pyyaml",
+    "segmentation-models-pytorch>=0.5",  # U-Net++ (MIT; brings timm, Apache-2.0)
 ]
 
 [project.optional-dependencies]

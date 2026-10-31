@@ -3,9 +3,9 @@ original is never mutated, so before/after snapshots stay valid for undo."""
 
 from __future__ import annotations
 
-from defect_inspection.core.annotation import BBox, Polygon
+from defect_inspection.core.annotation import BBox, Mask, Polygon
 
-Shape = BBox | Polygon
+Shape = BBox | Polygon | Mask
 
 
 def clamp_point(x: float, y: float, width: int, height: int) -> tuple[float, float]:
@@ -22,6 +22,9 @@ def clamp_translation(shape: Shape, dx: float, dy: float, width: int, height: in
 
 def translate(shape: Shape, dx: float, dy: float, width: int, height: int) -> Shape:
     dx, dy = clamp_translation(shape, dx, dy, width, height)
+    if isinstance(shape, Mask):  # whole pixels only, still inside the image
+        return shape.moved(min(max(round(dx), -shape.x), width - shape.x - shape.w),
+                           min(max(round(dy), -shape.y), height - shape.y - shape.h))
     if isinstance(shape, BBox):
         return shape.model_copy(update={"x1": shape.x1 + dx, "y1": shape.y1 + dy,
                                          "x2": shape.x2 + dx, "y2": shape.y2 + dy})

@@ -51,6 +51,8 @@ from defect_inspection.core.evaluate import (
 from defect_inspection.core.imaging import to_training_8bit
 from defect_inspection.core.preview import DROPPED_COLOR, EDGE_COLOR, GT_COLOR, PRED_COLOR, draw_comparison
 from defect_inspection.core.project import Project
+from defect_inspection.core import unet
+from defect_inspection.core.model_zoo import is_unet
 from defect_inspection.core.trainer import RunInfo, list_runs, weights_paths
 from defect_inspection.platform_utils import imread_unicode, is_supported_image
 from defect_inspection.ui.canvas.image_canvas import numpy_to_qimage
@@ -339,7 +341,10 @@ class ResultPanel(QWidget):
         key = (str(weights), weights.stat().st_mtime)
         if key not in self._predictors:
             imgsz = run.spec.train.imgsz if run.spec else 640
-            predictor = Predictor(weights, self.project.config.task, imgsz)
+            if run.spec is not None and is_unet(run.spec.train.model):
+                predictor = unet.UnetPredictor(weights)  # masks (semantic segmentation)
+            else:
+                predictor = Predictor(weights, self.project.config.task, imgsz)
             tiling = run.spec.tiling() if run.spec else None
             self._predictors = {key: TiledPredictor(predictor, tiling) if tiling else predictor}
         return self._predictors[key]

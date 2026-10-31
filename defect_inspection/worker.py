@@ -23,6 +23,7 @@ import traceback
 import warnings
 from pathlib import Path
 
+from defect_inspection.core.model_zoo import is_unet
 from defect_inspection.core.trainer import (
     encode_event,
     epoch_event,
@@ -175,6 +176,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if os.environ.get("DEFECTLAB_FAKE_TRAIN"):
             run_fake(spec, emit, stop, run_dir, int(status.get("epoch", 0)) if args.resume else 0)
+        elif is_unet(spec.train.model):
+            from defect_inspection.core.unet import train_unet
+
+            train_unet(spec, run_dir, emit, stop.is_set, args.resume, StopTraining)
         else:
             run_ultralytics(spec, emit, stop, run_dir, args.resume)
     except StopTraining:

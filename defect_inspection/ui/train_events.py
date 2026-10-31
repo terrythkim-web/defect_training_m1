@@ -11,6 +11,15 @@ from PySide6.QtCore import QCoreApplication
 from defect_inspection.core.trainer import open_run_log
 
 MAIN_METRIC = "metrics/mAP50-95(B)"
+SEG_MAIN_METRIC = "metrics/IoU"  # U-Net++ runs
+
+
+def main_metric(metrics: dict) -> tuple[str, float] | None:
+    """(name, value) shown as a run's headline number: box mAP50-95, mask mAP50-95 or U-Net++ IoU."""
+    for key, name in ((MAIN_METRIC, "mAP50-95"), ("metrics/mAP50-95(M)", "mAP50-95"), (SEG_MAIN_METRIC, "IoU")):
+        if metrics.get(key) is not None:
+            return name, metrics[key]
+    return None
 
 
 def _tr(text: str) -> str:
@@ -62,19 +71,20 @@ def _transfer(e: dict, channels: int | None) -> EventView:
 
 
 def _train_epoch(e: dict, channels: int | None) -> EventView:
-    loss = e.get("losses", {}).get("train/box_loss")
-    if loss is None:
-        return EventView()
-    return EventView(status=_tr("epoch {0}/{1} 학습 완료, 검증 중… (box loss {2:.4f})")
-                     .format(e["epoch"], e["epochs"], loss))
+    losses = e.get("losses", {})
+    for key, name in (("train/box_loss", "box"), ("train/seg_loss", "seg")):
+        if losses.get(key) is not None:
+            return EventView(status=_tr("epoch {0}/{1} 학습 완료, 검증 중… ({2} loss {3:.4f})")
+                             .format(e["epoch"], e["epochs"], name, losses[key]))
+    return EventView()
 
 
 def _epoch(e: dict, channels: int | None) -> EventView:
     m = e.get("metrics", {})
-    main = m.get(MAIN_METRIC, m.get("metrics/mAP50-95(M)"))
+    main = main_metric(m)
     status = _tr("epoch {0}/{1} · 경과 {2} · 남은 시간 약 {3}{4}").format(
         e["epoch"], e["epochs"], fmt_duration(e.get("elapsed_s")), fmt_duration(e.get("eta_s")),
-        "" if main is None else f" · mAP50-95 {main:.3f}")
+        "" if main is None else f" · {main[0]} {main[1]:.3f}")
     return EventView(logs=(_tr("epoch {0}/{1}: {2}").format(e["epoch"], e["epochs"], fmt_metrics(m)),),
                      status=status, progress=(e["epoch"], e["epochs"]), chart=True)
 

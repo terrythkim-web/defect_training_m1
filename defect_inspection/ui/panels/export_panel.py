@@ -38,6 +38,7 @@ from defect_inspection.core.exporter import (
 from defect_inspection.core.model_zoo import get_choice
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import RunInfo, list_runs
+from defect_inspection.ui.train_events import main_metric
 from defect_inspection.platform_utils import (
     COREML_EXPORT_AVAILABLE,
     FORBIDDEN_FILENAME_CHARS,
@@ -211,11 +212,11 @@ class ExportPanel(QWidget):
             self.run_info.setText(self.tr("학습이 끝난 run이 없습니다. Train 탭에서 학습하세요."))
         else:
             metrics = run.status.get("final_metrics") or run.status.get("metrics") or {}
-            m = metrics.get("metrics/mAP50-95(B)", metrics.get("metrics/mAP50-95(M)"))
+            m = main_metric(metrics)  # mAP50-95, or IoU for U-Net++
             tiling = run.spec.tiling()
             self.run_info.setText(self.tr("{0} · 학습 크기 {1} · 데이터셋 {2}{3}").format(
                 run.spec.train.model, run.spec.train.imgsz, run.spec.train.dataset,
-                "" if m is None else f" · mAP50-95 {m:.3f}")
+                "" if m is None else f" · {m[0]} {m[1]:.3f}")
                 + ("" if tiling is None else self.tr("\nCrop 모델: 타일 {0}px, overlap {1}px 타일링 추론 정보가 metadata에 들어갑니다").format(
                     tiling.tile_size, tiling.overlap_px)))
         self._name_edited = False

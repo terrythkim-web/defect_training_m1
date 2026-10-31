@@ -39,6 +39,8 @@ from defect_inspection.ui.edge_check_dialog import EdgeCheckDialog
 from defect_inspection.ui.group_checker import GroupChecker
 from defect_inspection.ui.new_project_dialog import NewProjectDialog
 from defect_inspection.core.roi import RoiStore
+from defect_inspection.core import brush
+from defect_inspection.ui.canvas.brush_tool import BrushBar
 from defect_inspection.ui.canvas.labeling_canvas import LabelingCanvas
 from defect_inspection.ui.canvas.roi_tool import RoiBar, RoiSession
 from defect_inspection.ui.canvas.session import LabelSession
@@ -63,6 +65,7 @@ _SETTINGS_GEOMETRY = "main_window/geometry"
 _SETTINGS_MAIN_SPLITTER = "main_window/main_splitter"
 _SETTINGS_LEFT_SPLITTER = "main_window/left_splitter"
 _SETTINGS_SAM_MODEL = "sam/model"
+_SETTINGS_BRUSH_SIZE = "brush/size"
 _SETTINGS_AUTOSAVE = "autosave/interval_sec"
 _SETTINGS_EXPORT_PATTERN = "export/name_pattern"
 DEFAULT_AUTOSAVE_SEC = 30
@@ -165,6 +168,7 @@ class MainWindow(QMainWindow):
             (Tool.SELECT, self.tr("선택"), "V"),
             (Tool.BBOX, self.tr("BBox"), "B"),
             (Tool.POLYGON, self.tr("Polygon"), "P"),
+            (Tool.BRUSH, self.tr("브러시"), "R"),
             (Tool.CROP_ROI, self.tr("Crop ROI"), "C"),
             (Tool.SAM, self.tr("SAM 보조"), "S"),
             (Tool.ERASER, self.tr("지우개"), "E"),
@@ -199,7 +203,11 @@ class MainWindow(QMainWindow):
         self.act_escape = action(self.tr("그리기 취소"), QKeySequence(Qt.Key.Key_Escape), self.on_escape)
         # F1.5: an image without defects trains as background (empty label)
         self.act_toggle_ok = action(self.tr("OK 이미지 (결함 없음) 표시/해제"), "O", self.toggle_ok)
-        for act in (self.act_enter, self.act_backspace, self.act_delete, self.act_escape, self.act_toggle_ok):
+        # Brush size ([ / ]): window-wide like the other labeling keys
+        self.act_brush_smaller = action(self.tr("브러시 작게"), "[", lambda: self._step_brush(up=False))
+        self.act_brush_larger = action(self.tr("브러시 크게"), "]", lambda: self._step_brush(up=True))
+        for act in (self.act_enter, self.act_backspace, self.act_delete, self.act_escape, self.act_toggle_ok,
+                    self.act_brush_smaller, self.act_brush_larger):
             self.addAction(act)
 
         # Train/Val by hand and the synthetic mark (image-list right-click, 편집 menu)
@@ -219,7 +227,7 @@ class MainWindow(QMainWindow):
         for act in (self.act_new, self.act_open, self.act_add_folder, self.act_save):
             tb.addAction(act)
         tb.addSeparator()
-        for tool in (Tool.BBOX, Tool.POLYGON, Tool.CROP_ROI, Tool.SAM, Tool.SELECT, Tool.ERASER):
+        for tool in (Tool.BBOX, Tool.POLYGON, Tool.BRUSH, Tool.CROP_ROI, Tool.SAM, Tool.SELECT, Tool.ERASER):
             tb.addAction(self.tool_actions[tool])
         tb.addSeparator()
         tb.addAction(self.act_undo)
@@ -278,7 +286,19 @@ class MainWindow(QMainWindow):
         self.roi_bar.make_common_requested.connect(lambda: self.roi_session and self.roi_session.make_common())
         self.roi_bar.clear_common_requested.connect(lambda: self.roi_session and self.roi_session.clear_common())
         self.tool_changed.connect(lambda tool: self.roi_bar.setVisible(tool == Tool.CROP_ROI))
+        # Brush options bar, shown only with the brush tool
+        self.brush_bar = BrushBar()
+        self.brush_bar.setVisible(False)
+        self.canvas_panel.layout().insertWidget(1, self.brush_bar)
+        self.tool_changed.connect(lambda tool: self.brush_bar.setVisible(tool == Tool.BRUSH))
+        self.brush_bar.size_changed.connect(lambda size: self.canvas.set_brush_size(size))
         self.canvas.set_placeholder(self.tr("프로젝트를 열고 이미지를 추가하세요"))
+        self.canvas.brush_size_changed.connect(self._on_brush_size)
+        try:
+            self.canvas.set_brush_size(int(self.settings.value(_SETTINGS_BRUSH_SIZE, brush.DEFAULT_SIZE)))
+        except (TypeError, ValueError):
+            pass  # a damaged setting: keep the default size
+        self.brush_bar.set_size(self.canvas.brush_size)
         self.canvas.cursor_moved.connect(self.set_cursor_position)
         self.canvas.message.connect(lambda text: self.statusBar().showMessage(text, 4000))
         self.canvas.selection_changed.connect(self.label_panel.select_ids)
@@ -410,6 +430,15 @@ class MainWindow(QMainWindow):
             self.current_tool = tool
             self.tool_changed.emit(tool)
         self._update_status()
+
+    def _step_brush(self, up: bool) -> None:
+        self.canvas.set_brush_size(brush.step_size(self.canvas.brush_size, up))
+
+    def _on_brush_size(self, size: int) -> None:
+        self.brush_bar.set_size(size)
+        self.settings.setValue(_SETTINGS_BRUSH_SIZE, size)
+        if self.current_tool == Tool.BRUSH:
+            self.statusBar().showMessage(self.tr("브러시 크기 {0} px").format(size), 2000)
 
     # ---- project -------------------------------------------------------------------
     def load_project(self, project: Project | None) -> None:
@@ -911,7 +940,7 @@ class MainWindow(QMainWindow):
         for act in (self.act_fit, self.act_zoom_100, self.act_prev_image, self.act_next_image):
             view_menu.addAction(act)
         tool_menu = bar.addMenu(self.tr("도구"))
-        for tool in (Tool.SELECT, Tool.BBOX, Tool.POLYGON, Tool.CROP_ROI, Tool.SAM, Tool.ERASER):
+        for tool in (Tool.SELECT, Tool.BBOX, Tool.POLYGON, Tool.BRUSH, Tool.CROP_ROI, Tool.SAM, Tool.ERASER):
             tool_menu.addAction(self.tool_actions[tool])
         tool_menu.addSeparator()
         self.act_check_groups = tool_menu.addAction(self.tr("중복·조각 이미지 검사"), self.check_image_groups_dialog)

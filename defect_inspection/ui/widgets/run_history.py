@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QTab
 
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import RunInfo, list_runs
-from defect_inspection.ui.train_events import MAIN_METRIC
+from defect_inspection.ui.train_events import main_metric
 
 STATE_LABELS = {
     "queued": "대기",
@@ -30,7 +30,7 @@ class RunHistoryTable(QTableWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(0, 5, parent)
         self.runs: list[RunInfo] = []
-        self.setHorizontalHeaderLabels([self.tr("run"), self.tr("모델"), self.tr("상태"), "epoch", "mAP50-95"])
+        self.setHorizontalHeaderLabels([self.tr("run"), self.tr("모델"), self.tr("상태"), "epoch", "mAP50-95 / IoU"])
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -49,14 +49,15 @@ class RunHistoryTable(QTableWidget):
 
     def _cells(self, run: RunInfo, active_run: Path | None) -> list[str]:
         status = run.status
-        metric = (status.get("final_metrics") or status.get("metrics") or {}).get(MAIN_METRIC)
+        metric = main_metric(status.get("final_metrics") or status.get("metrics") or {})
         state = display_state(run, active_run)
         label = self.tr(STATE_LABELS.get(state, state))
         if state in ("stopped", "interrupted", "failed") and run.resumable:
             label += self.tr(" (재개 가능)")
         return [run.run_id, run.spec.train.model if run.spec else "?", label,
                 f"{status.get('epoch', 0)}/{status.get('epochs', run.spec.train.epochs if run.spec else '?')}",
-                "-" if metric is None else f"{metric:.3f}"]
+                "-" if metric is None else (f"{metric[1]:.3f}" if metric[0] == "mAP50-95"
+                                            else f"{metric[0]} {metric[1]:.3f}")]
 
     def selected_run(self) -> RunInfo | None:
         rows = sorted({i.row() for i in self.selectedIndexes()})

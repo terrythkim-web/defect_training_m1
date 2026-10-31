@@ -21,7 +21,7 @@ from typing import Callable
 import albumentations as A
 import numpy as np
 
-from defect_inspection.core.annotation import BBox, ImageAnnotations, Polygon, fit_shape
+from defect_inspection.core.annotation import BBox, ImageAnnotations, Mask, Polygon, fit_shape, polygon_area
 from defect_inspection.core.augment_config import (  # noqa: F401 (re-exported)
     BUILTIN_PRESETS,
     DEFAULT_PRESET,
@@ -35,7 +35,7 @@ from defect_inspection.core.augment_config import (  # noqa: F401 (re-exported)
     save_preset,
 )
 
-Shape = BBox | Polygon
+Shape = BBox | Polygon | Mask
 
 
 # ---- transform registry --------------------------------------------------------------
@@ -150,7 +150,15 @@ class Augmenter:
                 keypoints.append((x - 0.5, y - 0.5))  # continuous -> pixel-index convention
                 owners.append(i)
 
-        out = self.pipeline(image=image, keypoints=keypoints)
+        # Mask labels (F2.9) travel as label masks (nearest interpolation), their outline as keypoints
+        # only to measure how much the transform scaled them (for the visibility rule).
+        mask_of = {i: s.full_pixels(w, h).astype(np.uint8) for i, s in enumerate(shapes) if isinstance(s, Mask)}
+        if mask_of:
+            out = self.pipeline(image=image, keypoints=keypoints, masks=list(mask_of.values()))
+            new_masks = dict(zip(mask_of, out["masks"]))
+        else:
+            out = self.pipeline(image=image, keypoints=keypoints)
+            new_masks = {}
         new_image = out["image"]
         if image.ndim == 2 and new_image.ndim == 3:
             new_image = new_image[:, :, 0]
@@ -161,14 +169,30 @@ class Augmenter:
             moved[owner].append((float(x) + 0.5, float(y) + 0.5))
 
         kept, dropped = [], 0
-        for shape, pts in zip(shapes, moved):
-            new = self._fit(shape, pts, nw, nh)
+        for i, (shape, pts) in enumerate(zip(shapes, moved)):
+            if i in new_masks:
+                new = self._fit_mask(shape, np.asarray(new_masks[i]) > 0, pts)
+            else:
+                new = self._fit(shape, pts, nw, nh)
             if new is None:
                 dropped += 1
             else:
                 kept.append(new)
         result = ImageAnnotations(image=image_name or annotations.image, width=nw, height=nh, shapes=kept)
         return AugmentResult(new_image, result, dropped)
+
+    def _fit_mask(self, shape: Mask, pixels: np.ndarray, outline: list[tuple[float, float]]) -> Mask | None:
+        """A transformed mask label with the same keep/drop rule: the share still visible is its pixel
+        area over the original area scaled like its outline (a zoom changes both)."""
+        visible = Mask.from_pixels(pixels, **shape.model_dump(include={"id", "class_id", "status", "source", "score"}))
+        if visible is None:
+            return None
+        before = polygon_area(shape.to_points())
+        scale = polygon_area(outline) / before if before > 0 else 1.0
+        expected = shape.area * scale
+        if expected <= 0 or visible.area / expected < self.config.min_visibility:
+            return None
+        return visible if visible.area >= self.config.min_area_px else None
 
     def _fit(self, shape: Shape, points: list[tuple[float, float]], w: int, h: int) -> Shape | None:
         """Clip a transformed shape to the image and apply the F3.6 keep/drop rule."""

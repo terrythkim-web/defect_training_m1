@@ -94,6 +94,27 @@ def box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, 
     return inter / union if union > 0 else 0.0
 
 
+def shape_iou(a, b) -> float:
+    """IoU of two label shapes: pixel IoU when BOTH are masks (a U-Net++ prediction against a brush
+    label), else box IoU as before. A detect box against a brush mask must stay box IoU: a diagonal
+    3 px crack scores ~0.03 pixel IoU against its own perfect box."""
+    from defect_inspection.core.annotation import Mask
+
+    if not (isinstance(a, Mask) and isinstance(b, Mask)):
+        return box_iou(a.bounds(), b.bounds())
+    if box_iou(a.bounds(), b.bounds()) <= 0:
+        return 0.0
+    from defect_inspection.core.brush import shape_mask
+
+    x0, y0 = int(np.floor(min(a.bounds()[0], b.bounds()[0]))), int(np.floor(min(a.bounds()[1], b.bounds()[1])))
+    x1 = int(np.ceil(max(a.bounds()[2], b.bounds()[2])))
+    y1 = int(np.ceil(max(a.bounds()[3], b.bounds()[3])))
+    ma = shape_mask(a, x1 - x0, y1 - y0, (x0, y0))
+    mb = shape_mask(b, x1 - x0, y1 - y0, (x0, y0))
+    union = int((ma | mb).sum())
+    return int((ma & mb).sum()) / union if union else 0.0
+
+
 @dataclass
 class ImageResult:
     path: str  # image path relative to images/
@@ -136,7 +157,7 @@ def match(ground_truth: list[Shape], predictions: list[Prediction], iou: float =
         for gi, gt in enumerate(ground_truth):
             if used[gi] or gt.class_id != pred.class_id:
                 continue
-            v = box_iou(gt.bounds(), pred.bounds())
+            v = shape_iou(gt, pred)
             if v >= best_iou:
                 best, best_iou = gi, v
         if best >= 0:
@@ -227,8 +248,16 @@ def generate_suggestions(project: Project, predictor: Predictor, paths: list[str
 
 
 def predictor_for_run(weights: str | Path, spec, device: str | None = None) -> Predictor:
-    """Predictor of a training run (RunSpec): crop runs get tiling inference (F7.6)."""
-    predictor = Predictor(weights, spec.task, spec.train.imgsz, device)
+    """Predictor of a training run (RunSpec): crop runs get tiling inference (F7.6); U-Net++ runs
+    predict masks (core/unet.py)."""
+    from defect_inspection.core.model_zoo import is_unet
+
+    if is_unet(spec.train.model):
+        from defect_inspection.core.unet import UnetPredictor
+
+        predictor = UnetPredictor(weights, device)
+    else:
+        predictor = Predictor(weights, spec.task, spec.train.imgsz, device)
     tiling = spec.tiling()
     if tiling is None:
         return predictor

@@ -179,6 +179,32 @@ def _out_suffix(src: Path) -> str:
     return ".jpg" if src.suffix.lower() in (".jpg", ".jpeg") else ".png"
 
 
+def label_map(annotations: ImageAnnotations) -> np.ndarray:
+    """uint8 class map of the confirmed labels for semantic segmentation (U-Net++): 0 = background,
+    class_id + 1 = defect; later labels win where they overlap. Every shape type is painted
+    (`brush.shape_mask`: pixel centres inside); Mask labels keep their holes."""
+    from defect_inspection.core.brush import shape_mask
+
+    w, h = annotations.width, annotations.height
+    out = np.zeros((h, w), np.uint8)
+    for shape in annotations.confirmed():
+        x1, y1, x2, y2 = shape.bounds()
+        x0, y0 = max(0, int(np.floor(x1))), max(0, int(np.floor(y1)))
+        x1i, y1i = min(w, int(np.ceil(x2))), min(h, int(np.ceil(y2)))
+        if x0 >= x1i or y0 >= y1i:
+            continue
+        m = shape_mask(shape, x1i - x0, y1i - y0, (x0, y0))
+        out[y0:y1i, x0:x1i][m] = min(shape.class_id + 1, 255)
+    return out
+
+
+def write_labels(label_dir: Path, mask_dir: Path, stem: str, annotations: ImageAnnotations, task: str) -> None:
+    """YOLO txt (labels/) and the class-map PNG (masks/) of one dataset image."""
+    write_yolo_txt(label_dir / f"{stem}.txt", annotations, task)
+    if not imwrite_unicode(mask_dir / f"{stem}.png", label_map(annotations)):
+        raise DatasetBuildError(f"마스크를 쓸 수 없습니다: {mask_dir / stem}.png")
+
+
 def _write_image(path: Path, image: np.ndarray) -> None:
     params = [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY] if path.suffix == ".jpg" else None
     if not imwrite_unicode(path, image, params):
@@ -217,7 +243,7 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
     work_dir = project.dataset_dir / "full.building"
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    for sub in ("images/train", "images/val", "labels/train", "labels/val"):
+    for sub in ("images/train", "images/val", "labels/train", "labels/val", "masks/train", "masks/val"):
         (work_dir / sub).mkdir(parents=True)
 
     report = BuildReport(out_dir=str(final_dir), skipped_unlabeled=skipped,
@@ -277,7 +303,7 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
             part = split[entry.path]
             is_ok = entry.path not in defect_paths
             stem, suffix = PurePosixPath(entry.path).stem, _out_suffix(src)
-            img_dir, lbl_dir = work_dir / "images" / part, work_dir / "labels" / part
+            img_dir, lbl_dir, mask_dir = (work_dir / sub / part for sub in ("images", "labels", "masks"))
             confirmed = ann.model_copy(update={"shapes": ann.confirmed()})
 
             # original
@@ -286,7 +312,7 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
                 shutil.copy2(src, dst)  # no re-encoding (no JPEG quality loss)
             else:
                 _write_image(dst, image)
-            write_yolo_txt(lbl_dir / f"{stem}.txt", confirmed, cfg.task)
+            write_labels(lbl_dir, mask_dir, stem, confirmed, cfg.task)
             if part == "train":
                 report.train_images += 1
                 report.ok_train += is_ok
@@ -315,7 +341,7 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
                 name = f"{stem}_aug{k:03d}{suffix}"
                 result = augmenter(src_img, src_ann, image_name=name)
                 _write_image(img_dir / name, result.image)
-                write_yolo_txt(lbl_dir / f"{stem}_aug{k:03d}.txt", result.annotations, cfg.task)
+                write_labels(lbl_dir, mask_dir, f"{stem}_aug{k:03d}", result.annotations, cfg.task)
                 report.augmented += 1
                 report.dropped_labels += result.dropped
                 tick(f"증강 {entry.path} #{k}")

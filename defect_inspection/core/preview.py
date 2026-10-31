@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from defect_inspection.core.annotation import BBox, ImageAnnotations
+from defect_inspection.core.annotation import BBox, ImageAnnotations, Mask
 from defect_inspection.core.augment_config import AugmentConfig
 
 
@@ -22,12 +22,41 @@ def scale_for_preview(image: np.ndarray, annotations: ImageAnnotations,
     sx, sy = nw / w, nh / h
     shapes = []
     for shape in confirmed:
-        if isinstance(shape, BBox):
+        if isinstance(shape, Mask):
+            scaled = scale_mask(shape, sx, sy, nw, nh)
+            if scaled is not None:
+                shapes.append(scaled)
+        elif isinstance(shape, BBox):
             shapes.append(shape.model_copy(update={"x1": shape.x1 * sx, "y1": shape.y1 * sy,
                                                    "x2": shape.x2 * sx, "y2": shape.y2 * sy}))
         else:
             shapes.append(shape.model_copy(update={"points": [(x * sx, y * sy) for x, y in shape.points]}))
     return small, annotations.model_copy(update={"width": nw, "height": nh, "shapes": shapes})
+
+
+def scale_mask(shape: Mask, sx: float, sy: float, width: int, height: int) -> Mask | None:
+    """A mask label resized by (sx, sy) into a width x height image (nearest pixel; None if it vanishes)."""
+    x0, y0 = int(np.floor(shape.x * sx)), int(np.floor(shape.y * sy))
+    x1 = max(x0 + 1, int(np.ceil((shape.x + shape.w) * sx)))
+    y1 = max(y0 + 1, int(np.ceil((shape.y + shape.h) * sy)))
+    small = cv2.resize(shape.pixels().astype(np.uint8), (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST)
+    fields = shape.model_dump(include={"id", "class_id", "status", "source", "score"})
+    full = np.zeros((height, width), bool)
+    cx1, cy1 = min(x1, width), min(y1, height)
+    full[y0:cy1, x0:cx1] = small[:cy1 - y0, :cx1 - x0].astype(bool)
+    return Mask.from_pixels(full, **fields)
+
+
+def outline_rings(shape, scale: float = 1.0) -> list[np.ndarray]:
+    """Outlines to draw with cv2.polylines(shift=4): a mask gives every outline and hole."""
+    if isinstance(shape, Mask):
+        from defect_inspection.core.mask_codec import edge_rings
+
+        rings = [[(x + shape.x, y + shape.y) for x, y in r] for r in edge_rings(shape.pixels())]
+    else:
+        rings = [shape.to_points()]
+    # Sub-pixel (shift=4) so outlines sit exactly on continuous label coordinates.
+    return [np.round((np.array(r, np.float32) * scale - 0.5) * 16).astype(np.int32) for r in rings]
 
 
 def _bgr(color: str) -> tuple[int, int, int]:
@@ -42,9 +71,7 @@ def draw_labels(image8: np.ndarray, annotations: ImageAnnotations, colors: list[
     thickness = max(1, round(max(out.shape[:2]) / 300))
     for shape in annotations.shapes:
         color = _bgr(colors[shape.class_id]) if shape.class_id < len(colors) else (255, 0, 255)
-        # Sub-pixel (shift=4) so outlines sit exactly on continuous label coordinates.
-        pts = np.round((np.array(shape.to_points(), np.float32) - 0.5) * 16).astype(np.int32)
-        cv2.polylines(out, [pts], True, color, thickness, cv2.LINE_AA, shift=4)
+        cv2.polylines(out, outline_rings(shape), True, color, thickness, cv2.LINE_AA, shift=4)
     return out
 
 
@@ -94,8 +121,7 @@ def draw_comparison(image8: np.ndarray, ground_truth: list, predictions: list, m
     font_scale = max(0.35, max(out.shape[:2]) / 900)
 
     def outline(shape, color):
-        pts = np.round((np.array(shape.to_points(), np.float32) * scale - 0.5) * 16).astype(np.int32)
-        cv2.polylines(out, [pts], True, color, thickness, cv2.LINE_AA, shift=4)
+        cv2.polylines(out, outline_rings(shape, scale), True, color, thickness, cv2.LINE_AA, shift=4)
 
     for shape in dropped:
         outline(shape, _bgr(DROPPED_COLOR))

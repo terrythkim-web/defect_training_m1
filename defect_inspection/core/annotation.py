@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from defect_inspection.platform_utils import atomic_write_text
 
@@ -106,7 +106,108 @@ class Polygon(_ShapeBase):
         return list(self.points)
 
 
-Shape = Annotated[Union[BBox, Polygon], Field(discriminator="type")]
+class Mask(_ShapeBase):
+    """Brush-painted pixel mask (F2.9), holes kept: run lengths (`mask_codec.rle_encode`, row-major,
+    starting with a background run) over its tight pixel box x, y, w, h. `bounds()` is that box;
+    `to_points()` is the outer outline along pixel edges, so code that needs a polygon (YOLO txt, keypoint
+    augmentation, drawing) gets one — holes reach only mask-aware code (brush, mask PNGs, U-Net++).
+    OpenCV is imported on first use only: loading a project must stay light."""
+
+    type: Literal["mask"] = "mask"
+    x: int
+    y: int
+    w: int = Field(gt=0)
+    h: int = Field(gt=0)
+    rle: list[int]
+    _cache: dict = PrivateAttr(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_rle(self) -> Mask:
+        if any(v < 0 for v in self.rle) or sum(self.rle) != self.w * self.h:
+            raise ValueError("mask run lengths must be >= 0 and cover the box exactly")
+        if not any(self.rle[1::2]):
+            raise ValueError("mask has no painted pixel")
+        return self
+
+    @classmethod
+    def from_pixels(cls, pixels, origin: tuple[int, int] = (0, 0), **fields) -> Mask | None:
+        """Mask of the True pixels of a 2-D array whose top-left pixel is `origin` (None if empty)."""
+        import numpy as np
+
+        from defect_inspection.core.mask_codec import rle_encode
+
+        arr = np.asarray(pixels, bool)
+        rows, cols = np.flatnonzero(arr.any(axis=1)), np.flatnonzero(arr.any(axis=0))
+        if rows.size == 0:
+            return None
+        y0, y1, x0, x1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+        return cls(x=origin[0] + x0, y=origin[1] + y0, w=x1 - x0, h=y1 - y0,
+                   rle=rle_encode(arr[y0:y1, x0:x1]), **fields)
+
+    def _cached(self, name: str, make):
+        """Per-pixel results cached against the current `rle` object (a copy with other pixels has
+        another list, so it never sees this one's cache)."""
+        hit = self._cache.get(name)
+        if hit is None or hit[0] is not self.rle or hit[1] != (self.w, self.h):
+            hit = (self.rle, (self.w, self.h), make())
+            self._cache[name] = hit
+        return hit[2]
+
+    def pixels(self):
+        """bool array (h, w) of the box; do not modify it (shared cache)."""
+        from defect_inspection.core.mask_codec import rle_decode
+
+        def decode():
+            arr = rle_decode(self.rle, self.w, self.h)
+            arr.flags.writeable = False  # shared cache: a write would corrupt every copy
+            return arr
+
+        return self._cached("pixels", decode)
+
+    @property
+    def area(self) -> int:
+        return int(sum(self.rle[1::2]))
+
+    def full_pixels(self, width: int, height: int):
+        """The mask in a `width` x `height` image (pixels outside it dropped)."""
+        import numpy as np
+
+        out = np.zeros((height, width), bool)
+        x0, y0 = max(self.x, 0), max(self.y, 0)
+        x1, y1 = min(self.x + self.w, width), min(self.y + self.h, height)
+        if x0 < x1 and y0 < y1:
+            out[y0:y1, x0:x1] = self.pixels()[y0 - self.y:y1 - self.y, x0 - self.x:x1 - self.x]
+        return out
+
+    def bounds(self) -> tuple[float, float, float, float]:
+        return float(self.x), float(self.y), float(self.x + self.w), float(self.y + self.h)
+
+    def to_points(self) -> list[tuple[float, float]]:
+        from defect_inspection.core.mask_codec import mask_outline
+
+        local = self._cached("outline", lambda: mask_outline(self.pixels()) or [
+            (0.0, 0.0), (float(self.w), 0.0), (float(self.w), float(self.h)), (0.0, float(self.h))])
+        return [(x + self.x, y + self.y) for x, y in local]
+
+    def pieces(self) -> list[Polygon]:
+        """One outline polygon per connected piece (largest first), in image coordinates."""
+        from defect_inspection.core.mask_codec import outer_outlines
+
+        local = self._cached("pieces", lambda: outer_outlines(self.pixels()))
+        out = []
+        for ring in local:
+            try:
+                out.append(Polygon(class_id=self.class_id, points=[(x + self.x, y + self.y) for x, y in ring]))
+            except ValueError:
+                continue  # degenerate piece
+        return out
+
+    def moved(self, dx: int, dy: int) -> Mask:
+        """Shifted by whole pixels (same id and pixels)."""
+        return self.model_copy(update={"x": self.x + int(dx), "y": self.y + int(dy)})
+
+
+Shape = Annotated[Union[BBox, Polygon, Mask], Field(discriminator="type")]
 
 
 class ImageAnnotations(BaseModel):
@@ -125,8 +226,16 @@ class ImageAnnotations(BaseModel):
         return [s for s in self.shapes if s.is_suggestion]
 
     def to_yolo_lines(self, task: TaskMode) -> list[str]:
-        """Confirmed shapes only: suggestions are not training data until accepted."""
-        return [line for s in self.confirmed() if (line := shape_to_yolo(s, self.width, self.height, task))]
+        """Confirmed shapes only: suggestions are not training data until accepted. A Mask in pieces
+        gives one seg line per piece (its box covers all pieces in detect)."""
+        lines = []
+        for s in self.confirmed():
+            if isinstance(s, Mask) and task == "seg":
+                lines += [line for piece in s.pieces()
+                          if (line := shape_to_yolo(piece, self.width, self.height, task))]
+            elif line := shape_to_yolo(s, self.width, self.height, task):
+                lines.append(line)
+        return lines
 
     # ---- suggestions (PRD F2.8) ---------------------------------------------
     def add_suggestions(self, shapes: list[BBox | Polygon], source: ShapeSource, replace: bool = True) -> None:
@@ -202,10 +311,30 @@ def clip_polygon(points: list[tuple[float, float]], w: float, h: float) -> list[
     return pts
 
 
-def fit_shape(shape: BBox | Polygon, points: list[tuple[float, float]], w: float, h: float,
-              min_visibility: float, min_area_px: float) -> BBox | Polygon | None:
+def fit_mask(mask: Mask, dx: int, dy: int, w: int, h: int, min_visibility: float,
+             min_area_px: float) -> Mask | None:
+    """`mask` shifted by whole pixels and clipped to the w x h image, like `fit_shape`."""
+    full = mask.area
+    moved = mask.moved(dx, dy)
+    clipped = Mask.from_pixels(moved.full_pixels(int(w), int(h)),
+                               **moved.model_dump(include={"id", "class_id", "status", "source", "score"}))
+    if clipped is None or clipped.area / full < min_visibility or clipped.area < min_area_px:
+        return None
+    if clipped.bounds() == moved.bounds():
+        return moved  # nothing cut off: keep the same pixel list (and its caches)
+    return clipped
+
+
+def fit_shape(shape: BBox | Polygon | Mask, points: list[tuple[float, float]], w: float, h: float,
+              min_visibility: float, min_area_px: float) -> BBox | Polygon | Mask | None:
     """`shape` moved to `points` (new coordinates), clipped to [0, w] x [0, h]; None when less than
-    `min_visibility` of it is still visible or it is smaller than `min_area_px` (F3.6 / F7.3)."""
+    `min_visibility` of it is still visible or it is smaller than `min_area_px` (F3.6 / F7.3).
+    A Mask can only be shifted here (taken from its first outline point); warped masks go through
+    the augmenter's mask path."""
+    if isinstance(shape, Mask):
+        ox, oy = shape.to_points()[0]
+        return fit_mask(shape, round(points[0][0] - ox), round(points[0][1] - oy), int(w), int(h),
+                        min_visibility, min_area_px)
     full_area = polygon_area(points)
     clipped = clip_polygon(points, w, h)
     if len(clipped) < 3 or full_area <= 0:

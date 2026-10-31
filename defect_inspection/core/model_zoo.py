@@ -11,7 +11,7 @@ from defect_inspection.core.att_yolo import TransferReport, build_att_yolo
 from defect_inspection.core.weights import resolve_weights
 
 TaskMode = Literal["detect", "seg"]
-Family = Literal["yolo11", "att-yolo"]
+Family = Literal["yolo11", "att-yolo", "unetpp"]
 
 
 @dataclass(frozen=True)
@@ -30,12 +30,19 @@ ATT_YOLO_NOTE = (
     "가져오므로, 이미지가 적으면 yolo11보다 낮을 수 있습니다. Compare 탭에서 yolo11과 비교해 보세요."
 )
 
+UNETPP_NOTE = (
+    "브러시 마스크를 픽셀 단위로 학습하는 시맨틱 분할 모델(박스 없음). 데이터셋의 masks/를 쓰므로 "
+    "빌드한 지 오래됐으면 다시 빌드하세요. 결과는 결함 덩어리마다 Mask로 나옵니다."
+)
+
 MODEL_CHOICES: list[ModelChoice] = [
     ModelChoice("yolo11n", "YOLO11 n (가장 빠름)", "yolo11", "n", 640, 100),
     ModelChoice("yolo11s", "YOLO11 s (기본)", "yolo11", "s", 640, 100),
     ModelChoice("yolo11m", "YOLO11 m (정확도 우선)", "yolo11", "m", 640, 100),
     ModelChoice("att-yolo-n", "ATT-YOLO n (작은 결함, 고해상도)", "att-yolo", "n", 1280, 300, ATT_YOLO_NOTE),
     ModelChoice("att-yolo-s", "ATT-YOLO s (작은 결함, 고해상도)", "att-yolo", "s", 1280, 300, ATT_YOLO_NOTE),
+    ModelChoice("unetpp-r18", "U-Net++ ResNet18 (픽셀 분할)", "unetpp", "r18", 512, 100, UNETPP_NOTE),
+    ModelChoice("unetpp-r34", "U-Net++ ResNet34 (픽셀 분할, 정확도 우선)", "unetpp", "r34", 512, 100, UNETPP_NOTE),
 ]
 DEFAULT_MODEL = "yolo11s"
 
@@ -55,6 +62,14 @@ def get_choice(key: str) -> ModelChoice:
         if choice.key == key:
             return choice
     raise KeyError(f"unknown model {key!r}; choose from {[c.key for c in MODEL_CHOICES]}")
+
+
+def is_unet(key: str) -> bool:
+    """U-Net++ (semantic segmentation, core/unet.py) instead of an Ultralytics model."""
+    try:
+        return get_choice(key).family == "unetpp"
+    except KeyError:
+        return False
 
 
 def yolo11_weights_name(scale: str, task: TaskMode) -> str:

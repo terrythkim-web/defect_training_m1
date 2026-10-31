@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from defect_inspection import __version__
 from defect_inspection.core.evaluate import box_iou, load_training_image, results_to_predictions, val_images
 from defect_inspection.core.imaging import to_training_8bit
-from defect_inspection.core.model_zoo import get_choice
+from defect_inspection.core.model_zoo import get_choice, is_unet
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import RunSpec, load_spec, read_status, weights_paths
 from defect_inspection.platform_utils import (
@@ -382,6 +382,32 @@ class ExportResult:
     seconds: float
 
 
+def _export_unet(project: Project, spec: RunSpec, run_dir: Path, best: Path, out_path: Path,
+                 options: ExportOptions, verify: bool, t0: float) -> ExportResult:
+    """U-Net++ runs (core/unet.py): torch.onnx at the training input size, verified by pixel classes."""
+    from defect_inspection.core import unet
+
+    if options.format != "onnx":
+        raise ValueError("U-Net++ 모델은 ONNX로만 내보낼 수 있습니다")
+    meta = unet.export_onnx(best, out_path, options.opset)
+    notes = []
+    if options.imgsz not in (None, meta["imgsz"]):
+        notes.append(f"U-Net++는 학습 입력 크기 {meta['imgsz']}로 내보냅니다 (요청 {options.imgsz} 무시)")
+    if options.half or options.dynamic or options.nms:
+        notes.append("U-Net++ 내보내기는 FP32 · 고정 크기 · NMS 없음만 지원합니다")
+    opts = options.model_copy(update={"imgsz": meta["imgsz"], "half": False, "dynamic": False, "nms": False})
+    verification = None
+    if verify:
+        verification = unet.verify_onnx(out_path, best, verification_images(project, spec))
+    meta_path, classes_path = sidecar_paths(out_path)
+    metadata = build_metadata(project, spec, run_dir, opts, verification, notes)
+    metadata.update(unet.onnx_metadata(meta))
+    metadata["task"] = "semantic_segmentation"
+    atomic_write_text(meta_path, json.dumps(metadata, ensure_ascii=False, indent=2))
+    atomic_write_text(classes_path, "".join(f"{name}\n" for name in spec.names))
+    return ExportResult(out_path, meta_path, classes_path, opts, verification, notes, round(time.monotonic() - t0, 2))
+
+
 def export_run(project: Project, run_dir: Path, out_path: Path, options: ExportOptions | None = None,
                verify: bool = True) -> ExportResult:
     """Export a run's best.pt to `out_path` (+ sidecars) and verify it: ONNX with onnxruntime,
@@ -403,6 +429,8 @@ def export_run(project: Project, run_dir: Path, out_path: Path, options: ExportO
         raise FileNotFoundError(f"best.pt가 없습니다: {best}")
     if spec.nc != len(project.config.classes) or spec.channels != project.channels:
         raise ValueError("이 run은 현재 프로젝트의 클래스/색 모드와 다르게 학습됐습니다")
+    if is_unet(spec.train.model):
+        return _export_unet(project, spec, run_dir, best, out_path, options, verify, t0)
     opts, notes = effective_options(spec, options)
 
     if opts.format == "coreml":

@@ -17,14 +17,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from defect_inspection.core.annotation import BBox
+from defect_inspection.core.annotation import BBox, Mask
 from defect_inspection.ui.canvas.session import LabelSession
 
 ID_ROLE = Qt.ItemDataRole.UserRole
 
 
 def describe(shape, class_name: str) -> str:
-    kind = "BBox" if isinstance(shape, BBox) else f"Polygon {len(shape.points)}점"
+    if isinstance(shape, Mask):
+        kind = f"Mask {shape.area} px"
+    else:
+        kind = "BBox" if isinstance(shape, BBox) else f"Polygon {len(shape.points)}점"
     text = f"{class_name} · {kind}"
     if shape.is_suggestion:
         score = "" if shape.score is None else f" {shape.score:.2f}"

@@ -95,6 +95,18 @@ def _check_export() -> str:
     return f"yolo11n → ONNX {size / 1e6:.1f} MB, 출력 {list(out.shape)}"
 
 
+def _check_unet() -> str:
+    """U-Net++ (segmentation_models_pytorch + timm encoders) builds and runs: hidden imports bundled."""
+    import torch
+
+    from defect_inspection.core.unet import build_model
+
+    model, _ = build_model("resnet18", 1, 2, pretrained=False)
+    with torch.no_grad():
+        out = model.eval()(torch.zeros(1, 1, 64, 64))
+    return f"U-Net++ 출력 {tuple(out.shape)}"
+
+
 def _check_font() -> str:
     from defect_inspection.core.report import setup_matplotlib
 
@@ -145,6 +157,7 @@ CHECKS: list[tuple[str, Callable[[], str]]] = [
     ("torchvision 연산", _check_torch_ops),
     ("ONNX Runtime", _check_onnxruntime),
     ("ONNX 내보내기", _check_export),
+    ("U-Net++", _check_unet),
     ("한글 폰트", _check_font),
     ("계산 장치", _check_device),
     ("메인 창", _check_window),

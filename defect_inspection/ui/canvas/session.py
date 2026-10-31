@@ -68,6 +68,10 @@ class LabelSession(QObject):
         shapes = [new if s.id == new.id else s for s in self.shapes]
         self._commit(shapes, text or self.tr("라벨 수정"), select=[new.id])
 
+    def set_shapes(self, shapes: list[Shape], text: str, select: list[str] | None = None) -> None:
+        """Replace every shape at once (a brush stroke may grow, split, join and delete labels): one undo step."""
+        self._commit(list(shapes), text, select=select)
+
     def delete(self, ids: list[str]) -> None:
         shapes = [s for s in self.shapes if s.id not in ids]
         if len(shapes) != len(self.shapes):

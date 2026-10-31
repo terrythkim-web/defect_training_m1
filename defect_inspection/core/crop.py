@@ -30,7 +30,7 @@ from typing import Callable, Literal
 import numpy as np
 import yaml
 
-from defect_inspection.core.annotation import BBox, ImageAnnotations, Polygon, fit_shape, write_yolo_txt
+from defect_inspection.core.annotation import BBox, ImageAnnotations, Mask, Polygon, fit_shape
 from defect_inspection.core.crop_config import CropConfig
 from defect_inspection.core.dataset import (
     BuildCancelled,
@@ -42,6 +42,7 @@ from defect_inspection.core.dataset import (
     split_images,
     val_warnings,
     write_data_yaml,
+    write_labels,
 )
 from defect_inspection.core.defect_patches import Patch, extract_patches, paste_patches, transform_defects
 from defect_inspection.core.imaging import to_training_8bit
@@ -49,7 +50,7 @@ from defect_inspection.core.project import Project
 from defect_inspection.core.roi import RoiStore
 from defect_inspection.platform_utils import atomic_write_text, imread_unicode
 
-Shape = BBox | Polygon
+Shape = BBox | Polygon | Mask
 WindowKind = Literal["roi", "defect", "background", "tile"]
 KINDS: tuple[WindowKind, ...] = ("roi", "defect", "background", "tile")
 BACKGROUND_TRIES = 50
@@ -80,7 +81,10 @@ class CropWindow:
 # ---- coordinates (F7.3) ------------------------------------------------------------------
 
 def shift_shape(shape: Shape, dx: float, dy: float) -> Shape:
-    """Same shape (same id) moved by (dx, dy), not clipped."""
+    """Same shape (same id) moved by (dx, dy), not clipped. A Mask moves by whole pixels (crop
+    windows and tiles are integer)."""
+    if isinstance(shape, Mask):
+        return shape.moved(round(dx), round(dy))
     if isinstance(shape, BBox):
         return shape.model_copy(update={"x1": shape.x1 + dx, "y1": shape.y1 + dy,
                                         "x2": shape.x2 + dx, "y2": shape.y2 + dy})
@@ -282,7 +286,7 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
     work_dir = project.dataset_dir / "crop.building"
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    for sub in ("images/train", "images/val", "labels/train", "labels/val"):
+    for sub in ("images/train", "images/val", "labels/train", "labels/val", "masks/train", "masks/val"):
         (work_dir / sub).mkdir(parents=True)
 
     report = CropBuildReport(out_dir=str(final_dir), skipped_unlabeled=skipped,
@@ -338,7 +342,7 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
                 continue
 
             stem, suffix = PurePosixPath(entry.path).stem, _out_suffix(src)
-            img_dir, lbl_dir = work_dir / "images" / part, work_dir / "labels" / part
+            img_dir, lbl_dir, mask_dir = (work_dir / sub / part for sub in ("images", "labels", "masks"))
             counters = {k: 0 for k in KINDS}
             copies = ccfg.multiplier if part == "train" else 0
             dt_rng = image_rng(cfg.split.seed + 1, entry.path) if use_dt and copies else None
@@ -349,7 +353,7 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
                 labels, dropped = crop_annotations(ann, window, aug_cfg.min_visibility, aug_cfg.min_area_px,
                                                    image_name=name + suffix)
                 _write_image(img_dir / f"{name}{suffix}", pixels)
-                write_yolo_txt(lbl_dir / f"{name}.txt", labels, cfg.task)
+                write_labels(lbl_dir, mask_dir, name, labels, cfg.task)
                 report.dropped_labels += dropped
                 report.by_kind[window.kind] += 1
                 if part == "train":
@@ -370,7 +374,7 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
                             report.defect_transformed += len(src_labels.shapes) > 0
                     result = augmenter(src_pixels, src_labels, image_name=aug_name + suffix)
                     _write_image(img_dir / f"{aug_name}{suffix}", result.image)
-                    write_yolo_txt(lbl_dir / f"{aug_name}.txt", result.annotations, cfg.task)
+                    write_labels(lbl_dir, mask_dir, aug_name, result.annotations, cfg.task)
                     report.augmented += 1
                     report.dropped_labels += result.dropped
                 tick(index, (n + 1) / len(windows), f"{part}: {entry.path} ({n + 1}/{len(windows)})")

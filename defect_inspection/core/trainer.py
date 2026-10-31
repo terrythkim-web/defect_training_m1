@@ -167,6 +167,12 @@ def prepare_run(project: Project, cfg: TrainConfig, weights_dir: Path, now: floa
     if data.get("nc") != len(names) or data.get("channels", 3) != project.channels:
         raise ValueError("데이터셋이 현재 클래스/색 모드와 다릅니다. 데이터셋을 다시 빌드하세요.")
 
+    from defect_inspection.core.model_zoo import is_unet
+
+    if is_unet(cfg.model) and not ((data_yaml.parent / "masks" / "train").is_dir()
+                                   and (data_yaml.parent / "masks" / "val").is_dir()):
+        raise ValueError("U-Net++ 학습에는 마스크가 있는 데이터셋이 필요합니다. Augment 탭에서 데이터셋을 다시 빌드하세요.")
+
     tiling = None
     if cfg.dataset == "crop":
         info_path = data_yaml.parent / "build_info.yaml"

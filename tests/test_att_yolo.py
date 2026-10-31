@@ -143,7 +143,7 @@ def test_transfer_report_summary(yolov5s_state):
 
 def test_model_choices():
     keys = [c.key for c in model_zoo.MODEL_CHOICES]
-    assert keys == ["yolo11n", "yolo11s", "yolo11m", "att-yolo-n", "att-yolo-s"]
+    assert keys == ["yolo11n", "yolo11s", "yolo11m", "att-yolo-n", "att-yolo-s", "unetpp-r18", "unetpp-r34"]
     assert model_zoo.get_choice(model_zoo.DEFAULT_MODEL).family == "yolo11"
     att = model_zoo.get_choice("att-yolo-s")
     assert (att.default_imgsz, att.default_epochs) == (1280, 300) and "Compare" in att.note

@@ -6,9 +6,10 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsRectItem, QWidget
 
-from defect_inspection.core import label_edit
+from defect_inspection.core import brush, label_edit
 from defect_inspection.core.roi import RoiOptions, move_roi, resize_roi, roi_from_drag
 from defect_inspection.core.sam_assist import SamPrompt
+from defect_inspection.ui.canvas.brush_tool import BrushStroke, make_ring, place_ring
 from defect_inspection.ui.canvas.image_canvas import ImageCanvas, native_shortcut
 from defect_inspection.ui.canvas.roi_tool import RoiItem, RoiSession
 from defect_inspection.ui.canvas.session import LabelSession
@@ -23,6 +24,7 @@ class LabelingCanvas(ImageCanvas):
     selection_changed = Signal(list)  # selected shape ids
     message = Signal(str)  # short user-facing hints for the status bar
     sam_prompt_changed = Signal(object)  # SamPrompt (empty when the user removed every prompt)
+    brush_size_changed = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -40,6 +42,11 @@ class LabelingCanvas(ImageCanvas):
         self._poly_points: list[tuple[float, float]] = []
         self._poly_preview: QGraphicsPathItem | None = None
         self._poly_cursor: QPointF | None = None
+
+        # Brush: one stroke at a time; the ring shows the brush size under the cursor
+        self.brush_size = brush.DEFAULT_SIZE
+        self._stroke: BrushStroke | None = None
+        self._brush_ring = make_ring(self.scene())
 
         # SAM assist: prompts for the object being segmented, and the suggestion it produced
         self.sam_prompt = SamPrompt()
@@ -92,6 +99,7 @@ class LabelingCanvas(ImageCanvas):
             self.session.changed.disconnect(self.rebuild)
             self.session.select_requested.disconnect(self.select_ids)
         self.session = session
+        self._brush_ring.setVisible(False)  # until the mouse moves over the new image
         if session is not None:
             session.changed.connect(self.rebuild)
             session.select_requested.connect(self.select_ids)
@@ -211,14 +219,17 @@ class LabelingCanvas(ImageCanvas):
         if tool != Tool.CROP_ROI:
             for item in self._roi_items.values():
                 item.setSelected(False)
-        if tool in _DRAW_TOOLS or tool in (Tool.ERASER, Tool.SAM, Tool.CROP_ROI):
+        if tool != Tool.BRUSH:
+            self._brush_ring.setVisible(False)
+        if tool in _DRAW_TOOLS or tool in (Tool.BRUSH, Tool.ERASER, Tool.SAM, Tool.CROP_ROI):
             self.viewport().setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.viewport().unsetCursor()
 
     @property
     def is_drawing(self) -> bool:
-        return self._box_start is not None or bool(self._poly_points) or self._roi_start is not None
+        return (self._box_start is not None or bool(self._poly_points) or self._roi_start is not None
+                or self._stroke is not None)
 
     def cancel_drawing(self) -> bool:
         was = self.is_drawing
@@ -226,6 +237,9 @@ class LabelingCanvas(ImageCanvas):
         self._poly_points = []
         self._poly_cursor = None
         self._roi_start = None
+        if self._stroke is not None:
+            self._stroke.remove()
+            self._stroke = None
         for attr in ("_box_preview", "_poly_preview", "_roi_preview"):
             item = getattr(self, attr)
             if item is not None:
@@ -280,6 +294,10 @@ class LabelingCanvas(ImageCanvas):
 
     # ---- mouse -------------------------------------------------------------------------------
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self.tool == Tool.BRUSH and not self._space_down and event.button() in (
+                Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+            self._brush_press(event)
+            return
         if self.tool == Tool.SAM and not self._space_down and event.button() in (
                 Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
             self._sam_press_event(event)
@@ -313,6 +331,8 @@ class LabelingCanvas(ImageCanvas):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         super().mouseMoveEvent(event)
+        if self.tool == Tool.BRUSH:
+            self._brush_move(event)
         if self._sam_press is not None:
             self._sam_drag_preview(event)
         elif self._roi_start is not None:
@@ -324,6 +344,9 @@ class LabelingCanvas(ImageCanvas):
             self._update_poly_preview()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._stroke is not None and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+            self._brush_release()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._roi_start is not None:
             self._roi_release(event)
             return
@@ -360,6 +383,60 @@ class LabelingCanvas(ImageCanvas):
             self._poly_preview.setZValue(20)
         else:
             self._poly_preview.setPath(path)
+
+    # ---- brush ---------------------------------------------------------------------------
+    def set_brush_size(self, size: int) -> None:
+        size = int(min(max(size, brush.MIN_SIZE), brush.MAX_SIZE))
+        if size != self.brush_size:
+            self.brush_size = size
+            place_ring(self._brush_ring, self._brush_ring.pos(), size)
+            self.brush_size_changed.emit(size)
+
+    def _brush_press(self, event: QMouseEvent) -> None:
+        if self._stroke is not None:
+            return  # the other button pressed mid-stroke: keep the stroke going
+        erase = (event.button() == Qt.MouseButton.RightButton
+                 or bool(event.modifiers() & Qt.KeyboardModifier.AltModifier))
+        if self.session is None or not self._near_image(self._scene_point(event), self.brush_size / 2):
+            return
+        if not erase and not self._can_draw():
+            return
+        self.cancel_drawing()
+        self._stroke = BrushStroke(self.scene(), self._clamped(self._scene_point(event)), self.brush_size,
+                                   self._class_color(self.current_class_id), erase)
+
+    def _near_image(self, p: QPointF, margin: float) -> bool:
+        """A stroke may start just off the image (to paint along its border); the points are clamped."""
+        return (-margin <= p.x() <= self.image_width + margin and -margin <= p.y() <= self.image_height + margin
+                and self.image_width > 0)
+
+    def _brush_move(self, event: QMouseEvent) -> None:
+        p = self._scene_point(event)
+        place_ring(self._brush_ring, p, self.brush_size)
+        self._brush_ring.setVisible(self.image_pos(event.position().toPoint()) is not None)
+        if self._stroke is not None:
+            self._stroke.add(self._clamped(p))
+
+    def leaveEvent(self, event) -> None:
+        self._brush_ring.setVisible(False)
+        super().leaveEvent(event)
+
+    def _brush_release(self) -> None:
+        stroke = self._stroke
+        self._stroke = None
+        stroke.remove()
+        if self.session is None:
+            return
+        w, h = self.image_width, self.image_height
+        mask = brush.stroke_mask(stroke.points, self.brush_size, w, h)
+        if stroke.erase:
+            result = brush.erase(self.session.shapes, mask, w, h)
+            text = self.tr("브러시 지우기")
+        else:
+            result = brush.paint(self.session.shapes, mask, self.current_class_id, w, h)
+            text = self.tr("브러시 칠하기")
+        if result.changed:
+            self.session.set_shapes(result.shapes, text, result.selected)
 
     # ---- SAM assist ------------------------------------------------------------------------
     @property

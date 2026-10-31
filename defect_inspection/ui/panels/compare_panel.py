@@ -38,6 +38,7 @@ from defect_inspection.core import report as R
 from defect_inspection.core.evaluate import load_training_image, match
 from defect_inspection.core.preview import draw_comparison
 from defect_inspection.core.project import Project
+from defect_inspection.core.model_zoo import is_unet
 from defect_inspection.core.trainer import RunInfo, list_runs
 from defect_inspection.ui.canvas.image_canvas import numpy_to_qimage
 from defect_inspection.ui.widgets.training_charts import GRID_ALPHA, SERIES, SURFACE, TEXT_PRIMARY, TEXT_SECONDARY
@@ -285,7 +286,9 @@ class ComparePanel(QWidget):
     def refresh_runs(self, check: list[str] | None = None) -> None:
         """List finished runs with best.pt; `check` = run dirs to tick (others keep their state)."""
         ticked = set(check or []) | {str(r.path) for r in self.checked_runs()}
-        self.runs = [r for r in list_runs(self.project) if r.best_weights is not None and r.spec is not None] \
+        # U-Net++ runs (masks, no boxes) are not compared yet
+        self.runs = [r for r in list_runs(self.project) if r.best_weights is not None and r.spec is not None
+                     and not is_unet(r.spec.train.model)] \
             if self.project is not None else []
         self.run_list.blockSignals(True)
         self.run_list.clear()

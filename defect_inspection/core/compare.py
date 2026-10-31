@@ -26,7 +26,7 @@ import numpy as np
 from defect_inspection.core.annotation import BBox, Polygon
 from defect_inspection.core.dataset import select_images, split_images
 from defect_inspection.core.edge_filter_config import EdgeFilterConfig
-from defect_inspection.core.evaluate import MATCH_IOU, Prediction, box_iou, load_training_image, match  # noqa: F401 (match re-exported)
+from defect_inspection.core.evaluate import MATCH_IOU, Prediction, box_iou, load_training_image, match, shape_iou  # noqa: F401 (match re-exported)
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import EpochSeries, RunSpec, TrainConfig, load_spec, read_events, read_status, weights_paths
 
@@ -172,7 +172,7 @@ def pr_points(images: list[ImagePredictions], class_id: int | None, iou_thr: flo
         for gi, g in enumerate(images[k].ground_truth):
             if used[k][gi] or g.class_id != p.shape.class_id:
                 continue
-            v = box_iou(g.bounds(), p.shape.bounds())
+            v = shape_iou(g, p.shape)
             if v >= best_iou:
                 best, best_iou = gi, v
         if best >= 0:

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from defect_inspection.core.model_zoo import DEFAULT_MODEL, MODEL_CHOICES, PAPER_HYP, get_choice
+from defect_inspection.core.model_zoo import DEFAULT_MODEL, MODEL_CHOICES, PAPER_HYP, get_choice, is_unet
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import TrainConfig
 from defect_inspection.platform_utils import default_dataloader_workers, gpu_device_choice
@@ -119,13 +119,24 @@ class TrainSettingsForm(QGroupBox):
     # ---- project ---------------------------------------------------------------------------
     def set_project(self, project: Project | None) -> None:
         self.project = project
-        if project is not None:
-            mode = self.tr("그레이스케일 → 1채널 입력 모델") if project.channels == 1 else self.tr("컬러 → 3채널 입력 모델")
-            self.task_label.setText(f"{'detect (BBox)' if project.config.task == 'detect' else 'seg (Polygon)'} · {mode}")
-        else:
-            self.task_label.setText("-")
+        self._update_task_label()
         self.refresh_datasets()
         self._update_online_warning()
+
+    def _is_unet(self) -> bool:
+        return is_unet(self.model_combo.currentData())
+
+    def _update_task_label(self) -> None:
+        project = self.project
+        if project is None:
+            self.task_label.setText("-")
+            return
+        mode = self.tr("그레이스케일 → 1채널 입력 모델") if project.channels == 1 else self.tr("컬러 → 3채널 입력 모델")
+        if is_unet(self.model_combo.currentData()):
+            task = self.tr("시맨틱 분할 (픽셀 마스크)")
+        else:
+            task = "detect (BBox)" if project.config.task == "detect" else "seg (Polygon)"
+        self.task_label.setText(f"{task} · {mode}")
 
     def set_detected_device(self, text: str) -> None:
         self.gpu_available = text.startswith("GPU")
@@ -152,13 +163,18 @@ class TrainSettingsForm(QGroupBox):
         self.model_note.setText(self.tr(choice.note))
         self.model_note.setVisible(bool(choice.note))
         self.paper_hyp.setChecked(False)
+        unet = is_unet(choice.key)  # its own training loop: no Ultralytics augmentation or hyperparameters
+        self.online_aug.setEnabled(not unet)
+        self.paper_hyp.setEnabled(not unet)
+        self._update_task_label()
+        self._update_online_warning()
 
     def _update_online_warning(self) -> None:
         offline = [] if self.project is None else self.project.config.augment.enabled_keys()
         self.online_warning.setText(self.tr(
             "오프라인 증강({0}종)이 이미 데이터셋에 들어 있어, 내장 증강까지 켜면 뒤집기·밝기 같은 변환이 "
             "두 번 적용됩니다. 결과가 나빠지면 끄고 비교해 보세요.").format(len(offline)))
-        self.online_warning.setVisible(self.online_aug.isChecked() and bool(offline))
+        self.online_warning.setVisible(self.online_aug.isChecked() and not self._is_unet() and bool(offline))
 
     def current_config(self) -> TrainConfig:
         return TrainConfig(
@@ -171,7 +187,7 @@ class TrainSettingsForm(QGroupBox):
             patience=self.patience.value(),
             device=self.device.currentData(),
             workers=self.workers.value(),
-            online_augment=self.online_aug.isChecked(),
+            online_augment=self.online_aug.isChecked() and not self._is_unet(),
             paper_hyp=self.paper_hyp.isChecked(),
             pretrained=self.pretrained.isChecked(),
             seed=0 if self.project is None else self.project.config.split.seed,

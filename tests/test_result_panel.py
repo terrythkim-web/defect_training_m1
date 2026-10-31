@@ -16,7 +16,7 @@ from defect_inspection.core.annotation import BBox, Polygon
 from defect_inspection.core.augment_config import AugmentConfig, TransformSetting
 from defect_inspection.core.dataset import build_full_dataset
 from defect_inspection.core.project import Project
-from defect_inspection.core.trainer import TrainConfig, prepare_run, weights_paths, write_status
+from defect_inspection.core.trainer import TrainConfig, list_runs, prepare_run, weights_paths, write_status
 from defect_inspection.platform_utils import imwrite_unicode
 from defect_inspection.ui.main_window import MainWindow
 
@@ -530,3 +530,22 @@ def test_folder_sync_waits_for_the_edge_check(window, qapp, monkeypatch):
     monkeypatch.setattr(type(window.edge_check_dialog), "busy", property(lambda self: True))
     assert window.sync_images_folder() is False and window.images_sync_timer.isActive()
     window.edge_check_dialog.close()
+
+
+def test_unet_run_uses_the_mask_predictor(panel, monkeypatch):
+    """U-Net++ runs (masks) get core/unet.UnetPredictor instead of the Ultralytics Predictor."""
+    made = []
+
+    class FakeUnet:
+        task = "semseg"
+
+        def __init__(self, weights, device=None):
+            made.append(weights)
+
+        def predict(self, image8, conf=0.25, iou=0.7):
+            return []
+
+    monkeypatch.setattr("defect_inspection.core.unet.UnetPredictor", FakeUnet)
+    run_dir = fake_finished_run(panel.project, model="unetpp-r18")
+    (run,) = [r for r in list_runs(panel.project) if r.path == run_dir]
+    assert isinstance(panel._model(run), FakeUnet) and made == [run.best_weights]

@@ -127,7 +127,7 @@ def test_series_replay_handles_resume_overlap():
 
 def test_model_combo_from_registry_and_defaults(panel):
     keys = [panel.model_combo.itemData(i) for i in range(panel.model_combo.count())]
-    assert keys == ["yolo11n", "yolo11s", "yolo11m", "att-yolo-n", "att-yolo-s"]
+    assert keys == ["yolo11n", "yolo11s", "yolo11m", "att-yolo-n", "att-yolo-s", "unetpp-r18", "unetpp-r34"]
     assert panel.model_combo.currentData() == "yolo11s" and not panel.model_note.isVisibleTo(panel)
     panel.select_model("att-yolo-s")
     assert (panel.epochs.value(), panel.imgsz.value()) == (300, 1280)
@@ -367,3 +367,15 @@ def test_dataset_warnings_logged_at_start(panel, qapp):
     log = log_text(panel)
     assert "⚠ 데이터셋: Val 결함이 1개뿐입니다" in log  # 4 labeled images, 1 in Val
     assert "⚠ 데이터셋" in (Path(done[0]) / LOG_FILE).read_text(encoding="utf-8")
+
+
+def test_unet_choice_disables_ultralytics_options(panel):
+    idx = panel.model_combo.findData("unetpp-r18")
+    panel.model_combo.setCurrentIndex(idx)
+    assert not panel.online_aug.isEnabled() and not panel.paper_hyp.isEnabled()
+    assert "시맨틱 분할" in panel.task_label.text() and panel.imgsz.value() == 512
+    assert not panel.online_warning.isVisibleTo(panel)
+    cfg = panel.settings_box.current_config()
+    assert cfg.model == "unetpp-r18" and not cfg.online_augment
+    panel.model_combo.setCurrentIndex(panel.model_combo.findData("yolo11s"))
+    assert panel.online_aug.isEnabled() and "시맨틱" not in panel.task_label.text()

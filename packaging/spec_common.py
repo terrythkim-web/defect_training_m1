@@ -46,7 +46,8 @@ def native_libs(package: str) -> list[tuple[str, str]]:
 def collect(spec_dir: str) -> dict:
     root = Path(spec_dir).resolve().parent
     hidden = []
-    for pkg in ("ultralytics", "albumentations", "pyqtgraph", "onnxslim", "defect_inspection"):
+    for pkg in ("ultralytics", "albumentations", "pyqtgraph", "onnxslim", "segmentation_models_pytorch", "timm",
+                "defect_inspection"):
         hidden += collect_submodules(pkg, filter=lambda name: ".tests" not in name and "opengl" not in name)
     datas = []
     for pkg in ("ultralytics", "albumentations", "pyqtgraph"):

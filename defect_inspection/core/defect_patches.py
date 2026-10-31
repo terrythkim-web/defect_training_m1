@@ -19,10 +19,10 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from defect_inspection.core.annotation import BBox, ImageAnnotations, Polygon
+from defect_inspection.core.annotation import BBox, ImageAnnotations, Mask, Polygon
 from defect_inspection.core.augment_config import DefectTransformSetting
 
-Shape = BBox | Polygon
+Shape = BBox | Polygon | Mask
 PLACE_TRIES = 20
 
 
@@ -44,12 +44,17 @@ def patch_for(image: np.ndarray, shape: Shape, max_fraction: float = 0.5) -> Pat
     pw, ph = x2 - x1, y2 - y1
     if pw < 2 or ph < 2 or pw > w * max_fraction or ph > h * max_fraction:
         return None
-    mask = np.zeros((ph, pw), np.uint8)
     local = [(px - x1, py - y1) for px, py in shape.to_points()]
-    pts = np.round((np.array(local, np.float32) - 0.5) * 16).astype(np.int32)
-    cv2.fillPoly(mask, [pts], 255, shift=4)
+    if isinstance(shape, Mask):  # its own pixels, holes included
+        mask = shape.moved(-x1, -y1).full_pixels(pw, ph).astype(np.uint8) * 255
+    else:
+        mask = np.zeros((ph, pw), np.uint8)
+        pts = np.round((np.array(local, np.float32) - 0.5) * 16).astype(np.int32)
+        cv2.fillPoly(mask, [pts], 255, shift=4)
     soft = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (5, 5), 0) if min(pw, ph) >= 8 else mask / 255.0
-    if isinstance(shape, BBox):
+    if isinstance(shape, Mask):
+        local_shape = shape.moved(-x1, -y1)
+    elif isinstance(shape, BBox):
         local_shape = shape.model_copy(update={"x1": shape.x1 - x1, "y1": shape.y1 - y1,
                                                "x2": shape.x2 - x1, "y2": shape.y2 - y1})
     else:
@@ -82,9 +87,16 @@ def transform_patch(patch: Patch, scale: float, angle: float) -> Patch:
     mask = cv2.warpAffine(patch.mask, m, size, flags=cv2.INTER_LINEAR, borderValue=0)
     points = [(float(x), float(y)) for x, y in apply(patch.shape.to_points())]  # m already shifted
     s = patch.shape
-    if isinstance(s, BBox) and angle % 360 == 0:
+    shape = None
+    if isinstance(s, Mask):
+        # Warp the label pixels the same way. Linear + a low threshold, not nearest: nearest broke a
+        # rotated 1 px crack into ~40 pieces.
+        soft = cv2.warpAffine(s.full_pixels(pw, ph).astype(np.float32), m, size, flags=cv2.INTER_LINEAR,
+                              borderValue=0)
+        shape = Mask.from_pixels(soft >= 0.25, class_id=s.class_id)  # None if it vanished: outline below
+    if shape is None and isinstance(s, BBox) and angle % 360 == 0:
         shape = BBox(class_id=s.class_id, x1=points[0][0], y1=points[0][1], x2=points[2][0], y2=points[2][1])
-    else:
+    elif shape is None:
         shape = Polygon(class_id=s.class_id, points=points)
     # where the transformed patch sits if it keeps the original centre
     cx, cy = patch.origin[0] + pw / 2, patch.origin[1] + ph / 2
@@ -136,6 +148,8 @@ def blend(image: np.ndarray, patch: Patch, ox: int, oy: int) -> Shape:
     alpha = patch.mask if image.ndim == 2 else patch.mask[:, :, None]
     image[oy:oy + ph, ox:ox + pw] = np.clip(alpha * patch.pixels + (1 - alpha) * region, 0, 255).astype(np.uint8)
     s = patch.shape
+    if isinstance(s, Mask):
+        return Mask(class_id=s.class_id, x=s.x + ox, y=s.y + oy, w=s.w, h=s.h, rle=s.rle)
     if isinstance(s, BBox):
         return BBox(class_id=s.class_id, x1=s.x1 + ox, y1=s.y1 + oy, x2=s.x2 + ox, y2=s.y2 + oy)
     return Polygon(class_id=s.class_id, points=[(x + ox, y + oy) for x, y in s.points])
@@ -144,9 +158,12 @@ def blend(image: np.ndarray, patch: Patch, ox: int, oy: int) -> Shape:
 def erase(image: np.ndarray, shape: Shape, grow: int = 3) -> np.ndarray:
     """Fill a defect's place from its surroundings (cv2.inpaint), for the "move" mode."""
     h, w = image.shape[:2]
-    mask = np.zeros((h, w), np.uint8)
-    pts = np.round((np.array(shape.to_points(), np.float32) - 0.5) * 16).astype(np.int32)
-    cv2.fillPoly(mask, [pts], 255, shift=4)
+    if isinstance(shape, Mask):
+        mask = shape.full_pixels(w, h).astype(np.uint8) * 255
+    else:
+        mask = np.zeros((h, w), np.uint8)
+        pts = np.round((np.array(shape.to_points(), np.float32) - 0.5) * 16).astype(np.int32)
+        cv2.fillPoly(mask, [pts], 255, shift=4)
     mask = cv2.dilate(mask, np.ones((2 * grow + 1, 2 * grow + 1), np.uint8))
     return cv2.inpaint(image, mask, 5, cv2.INPAINT_TELEA)
 

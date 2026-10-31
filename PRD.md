@@ -60,7 +60,7 @@
 - F2.2 클래스 관리: 추가/이름변경/색상/숫자키 단축키(1~9)
 - F2.3 줌(휠)/팬(스페이스+드래그)/Fit, 픽셀 좌표 표시, 밝기·대비 임시 조정(라벨에 영향 없음)
 - F2.4 Undo/Redo, 자동저장
-- F2.5 단축키: B/P/V/C/S(도구, S = SAM 보조), A/D(이전/다음 이미지), Del, Ctrl+S, Ctrl+Z/Y
+- F2.5 단축키: B/P/R/V/C/S(도구, R = 브러시, S = SAM 보조), [ / ](브러시 크기), A/D(이전/다음 이미지), Del, Ctrl+S, Ctrl+Z/Y
 - F2.6 저장 포맷: 내부 JSON(원본 정밀 좌표) + YOLO txt(detect: bbox / seg: polygon) 자동 생성
 - F2.7 태스크 모드: **Detect**(Polygon은 외접 BBox로 변환) / **Segment**(BBox는 4점 polygon으로 변환)
 - F2.8 **자동 라벨 제안 + 사용자 선택**: 제안은 확정 라벨과 따로 표시되고, 사용자가 수락한 것만 라벨이 된다
@@ -74,6 +74,7 @@
   - **선택 동작**: 하나씩 수락(Enter)/거절(Backspace), 수정 후 수락, 클래스 변경 후 수락, "score ≥ X 모두 수락", "이 이미지 제안 모두 거절". 모든 동작은 Undo 가능
   - **저장**: 제안은 라벨 JSON에 `status: suggested`(+ `source`, `score`)로 저장되어 앱을 다시 열어도 유지. YOLO txt와 학습에는 수락된 라벨만 사용
   - **이미지 리스트**: "제안 대기" 상태 표시와 필터 (F1.3)
+- F2.9 **브러시 · Mask 라벨**: 왼쪽 드래그로 칠하면 현재 클래스의 확정 라벨 중 닿은 것에 합쳐지고(여러 개면 하나로), 닿은 것이 없으면 새 라벨. 오른쪽(또는 Alt)+드래그는 닿은 모든 라벨에서 지움(둘로 잘리면 두 라벨). 크기는 원본 픽셀 지름, [ / ] 키. 결과는 칠한 픽셀 그대로(구멍 포함) **Mask 라벨**로 저장(JSON 안 run-length, 덩어리 하나 = 라벨 하나). 브러시가 닿은 Polygon/BBox도 Mask가 됨. YOLO txt는 detect = 외접 박스, seg = 조각마다 바깥 윤곽(구멍은 YOLO에서만 빠짐). 데이터셋 빌드는 모든 라벨을 클래스 맵 PNG(`masks/`)로도 씀(U-Net++, F4.9). 한 획 = Undo 한 단계
 
 ### F3. Augmentation
 - F3.1 라이브러리: **Albumentations** (bbox/polygon 좌표 동기 변환)
@@ -116,6 +117,10 @@
   - 선택 시 안내: 이미지가 적으면 사전학습된 yolo11이 더 나을 수 있으니 Compare 탭(F8.1 "기존 run 2개 선택")으로 비교 권장
   - 논문 코드는 가져오지 않고 논문 본문·Fig. 7·Table 8로 구조만 재구성 (Ultralytics AGPL 범위 그대로)
 
+- F4.9 **U-Net++ (시맨틱 분할)**: `unetpp-r18`/`unetpp-r34` (segmentation_models_pytorch, ImageNet 사전학습 ResNet 인코더, 오프라인이면 처음부터). 데이터셋 `masks/` 클래스 맵으로 픽셀 단위 학습(Dice + CE, AdamW, cosine). 입력은 긴 변을 imgsz(기본 512)로 줄이고 정사각으로 패딩(패딩은 손실·지표에서 제외). 같은 학습 프로세스·이벤트·중지/재개·조기 종료. 지표: IoU·Dice(결함 클래스 평균), recall(결함 덩어리: GT 덩어리의 50 % 이상을 맞힌 비율), fitness = IoU. Ultralytics 내장 증강·논문 하이퍼파라미터는 해당 없음
+  - 예측: 클래스별 확률 → argmax → 연결된 덩어리마다 Mask 하나, score = 덩어리 평균 확률(conf 미만 버림). Result 탭·자동 라벨 제안(Mask 제안)·테두리 필터 그대로 사용. Mask끼리는 픽셀 IoU, 그 밖(박스 대 Mask 포함)은 박스 IoU로 매칭
+  - 1차 범위: 학습·Result·ONNX. Compare 탭·리포트에서는 제외(2차)
+
 ### F5. 결과 확인 — 우측 Result 탭
 - F5.1 Val 이미지 예측 결과 그리드 (정답 파랑 / 예측 주황 + 점수). 낮은 conf로 한 번 예측해 두고 conf 슬라이더는 즉시 다시 거름. 맞음·오검·미검은 같은 클래스 + IoU ≥ 0.5 기준(점수 높은 예측부터 짝지음), 필터: 오검·미검 / 미검 / 오검 / 정상
 - F5.2 Confusion matrix, PR curve 표시 (Ultralytics 산출물 활용)
@@ -142,6 +147,7 @@
   - Crop 모델 metadata `crop`: `tiling`(tile_size, overlap_px, 병합 기준), 타일링 방법 설명(`how`), crop 크기, crop 방식, 공통 ROI 좌표. ONNX 검증은 crop 모델이면 Val crop 이미지로 함
   - 입력 색 순서: 컬러는 **RGB**(OpenCV BGR 이미지는 바꿔서 입력), 그레이는 1채널. 전처리: 16bit는 >> 8, letterbox(비율 유지, 패딩 114, 가운데 정렬), 0~1 정규화, NCHW. 출력 형식(NMS 포함 여부), 학습 지표, 검증 결과도 기록
 - F6.5 (옵션) 간단한 Python/C++ 추론 예제 코드 동봉
+- F6.6 U-Net++ run: `torch.onnx`로 학습 입력 크기 고정(1, C, S, S) → softmax 확률 (1, nc+1, S, S), FP32만. ONNX Runtime 검증 = 픽셀 클래스 일치율 ≥ 99.5 %. metadata에 리사이즈·패딩·정규화(mean/std)와 출력 해석. CoreML 미지원
 
 ### F7. Crop 기반 학습 — 좌측 마킹 + 우측 Augment/Train
 전체 이미지에서 defect가 작거나 검사 대상 영역이 일부일 때, 이미지를 잘라(crop) 학습할 수 있게 한다.
@@ -297,6 +303,7 @@ tests/
 | M7 | Full vs Crop 비교 학습/평가, Compare 탭, 리포트(HTML), Linux·Windows 각각 PyInstaller 패키징 | 비교 리포트, OS별 설치본 |
 | M8 | macOS(Apple Silicon) 지원: MPS 학습·추론, CoreML export, Mac .app/.dmg, 가속 측정과 MLX 진행 여부 결정 | Mac 설치본, 측정 결과 |
 | M9 | 테두리 필터(F9): 최외각 선 위 예측만 남김, Result·제안·비교 적용, 테두리 검사 | 오검 감소, 규칙 확인 도구 |
+| M10 | 브러시 · Mask 라벨(F2.9), U-Net++ 학습·Result·ONNX(F4.9, F6.6) | 칠한 픽셀 그대로 학습하는 분할 모델 |
 
 ## 8. 성공 지표 (수용 기준)
 - 샘플 이미지 20장 + 증강으로 학습 시 val mAP50 ≥ 0.8 (단순 defect 기준)

@@ -13,10 +13,10 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsPathItem, QGraphicsRectItem, QStyleOptionGraphicsItem
 
-from defect_inspection.core.annotation import BBox, Polygon
+from defect_inspection.core.annotation import BBox, Mask, Polygon
 from defect_inspection.core.label_edit import clamp_point, clamp_translation
 
-Shape = BBox | Polygon
+Shape = BBox | Polygon | Mask
 
 HANDLE_SIZE = 8  # screen pixels
 _tag_font: list[QFont] = []
@@ -43,6 +43,18 @@ class ShapeController(Protocol):
 
 def shape_points(shape: Shape) -> list[tuple[float, float]]:
     return shape.to_points()
+
+
+def mask_path(shape: Mask) -> QPainterPath:
+    """Every outline and hole of a mask label, filled with the even-odd rule (holes stay open)."""
+    from defect_inspection.core.mask_codec import edge_rings
+
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    for ring in edge_rings(shape.pixels()):
+        path.addPolygon(QPolygonF([QPointF(x + shape.x, y + shape.y) for x, y in ring]))
+        path.closeSubpath()
+    return path
 
 
 class HandleItem(QGraphicsRectItem):
@@ -127,7 +139,8 @@ class ShapeItem(QGraphicsPathItem):
         x1, y1, _, _ = shape.bounds()
         self.tag.setPos(x1, y1)
 
-        self.handles = [HandleItem(self, i) for i in range(len(self._points))]
+        # A mask has no vertices to drag: select, move, class change, brush
+        self.handles = [] if isinstance(shape, Mask) else [HandleItem(self, i) for i in range(len(self._points))]
         self._place_handles()
         self._show_handles(False)
 
@@ -148,6 +161,9 @@ class ShapeItem(QGraphicsPathItem):
         self.setBrush(QBrush(fill))
 
     def _update_path(self) -> None:
+        if isinstance(self.shape_model, Mask):
+            self.setPath(mask_path(self.shape_model))
+            return
         path = QPainterPath()
         path.addPolygon(QPolygonF([QPointF(x, y) for x, y in self._points]))
         path.closeSubpath()
