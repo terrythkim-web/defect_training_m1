@@ -233,9 +233,9 @@ def test_polled_lines_split_reads_into_lines():
     """Windows reads the worker's stdin pipe only when bytes are waiting: a thread blocked in
     ReadFile on the pipe made spawning DataLoader workers (they inherit it) hang forever."""
     r, w = os.pipe()
-    os.write(w, "noise\nST".encode() + "OP\n끝".encode())
+    os.write(w, "noise\r\nST".encode() + "OP\n끝".encode())
     os.close(w)
-    waits = iter([0, 8, 0, 0, 6, None])  # nothing yet, then the bytes in two chunks, then EOF
+    waits = iter([0, 9, 0, 0, 6, None])  # nothing yet, then the bytes in two chunks, then EOF
     slept = []
     lines = list(pu._polled_lines(r, lambda: next(waits), 0.2, slept.append))
     os.close(r)

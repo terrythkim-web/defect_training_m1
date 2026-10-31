@@ -4,9 +4,10 @@ class), right drag erases, [ and ] change the size, one stroke = one undo step."
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPointF, QSettings, Qt
+from PySide6.QtCore import QEvent, QPointF, QSettings, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QGraphicsPathItem
+from PySide6.QtWidgets import QApplication, QGraphicsPathItem
 from test_labeling import IMG_H, IMG_W, drag, project, qapp, vp, wait_until  # noqa: F401 (fixtures)
 
 from defect_inspection.core import brush
@@ -37,6 +38,16 @@ def seg_window(qapp, project, tmp_path):  # noqa: F811
     yield w
     w.project_dirty = False
     w.close()
+
+
+def hover(w, x, y):
+    """A move with no button pressed, sent straight to the viewport. QTest.mouseMove without a
+    button goes through the window and on Windows CI (offscreen) arrived 138 px to the left."""
+    view = w.canvas.viewport()
+    pos = QPointF(vp(w, x, y))
+    QApplication.sendEvent(view, QMouseEvent(QEvent.Type.MouseMove, pos, view.mapToGlobal(pos),
+                                             Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                                             Qt.KeyboardModifier.NoModifier))
 
 
 @pytest.fixture
@@ -162,7 +173,7 @@ def test_escape_cancels_a_stroke(seg_window):
 
 def test_ring_follows_the_cursor_with_the_brush_size(seg_window):
     w = seg_window
-    QTest.mouseMove(w.canvas.viewport(), vp(w, 120, 90))
+    hover(w, 120, 90)
     ring = w.canvas._brush_ring
     assert ring is not None and ring.isVisible()
     assert ring.rect().width() == pytest.approx(10)
@@ -209,7 +220,7 @@ def test_damaged_size_setting_falls_back_to_the_default(qapp, tmp_path):  # noqa
 
 def test_ring_is_hidden_after_switching_image(seg_window, qapp):
     w = seg_window
-    QTest.mouseMove(w.canvas.viewport(), vp(w, 130, 100))  # QTest skips a move to where the cursor already is
+    hover(w, 130, 100)
     assert w.canvas._brush_ring.isVisible()
     w.image_panel.step(1)
     assert wait_until(qapp, lambda: w.session is not None and w.session.image_path.startswith("b"))

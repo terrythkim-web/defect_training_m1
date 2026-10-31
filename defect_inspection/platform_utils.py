@@ -360,6 +360,7 @@ def _polled_lines(fd: int, peek, poll_sec: float, sleep):
         if not data:
             break
         *lines, pending = (pending + data).split(b"\n")
-        yield from (line.decode("utf-8", "replace") + "\n" for line in lines)
+        # "\r\n" → "\n" like a text-mode stdin (the app writes text, on Windows with \r\n)
+        yield from (line.decode("utf-8", "replace").removesuffix("\r") + "\n" for line in lines)
     if pending:
         yield pending.decode("utf-8", "replace")
