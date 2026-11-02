@@ -37,6 +37,9 @@ Shape = BBox | Polygon
 FLOOR_CONF = 0.001  # predictions kept for mAP / PR curves; P/R/F1 use the chosen conf
 IOU_THRESHOLDS = [round(0.5 + 0.05 * i, 2) for i in range(10)]
 SIZE_BINS = (("small", 0.0, 32.0 ** 2), ("medium", 32.0 ** 2, 96.0 ** 2), ("large", 96.0 ** 2, float("inf")))
+# NMS IoU for the comparison: 0.7 (Ultralytics' default) kept a second box on the same defect
+# (they overlapped by 0.5-0.7), so every found defect also counted as a false detection.
+DEFAULT_NMS_IOU = 0.5
 SPEED_IMAGES = 5  # images timed per device (after one warm-up)
 PRIORITY_METRICS = {"mAP50-95": "map50_95", "mAP50": "map50", "Recall": "recall", "Precision": "precision",
                     "F1": "f1"}
@@ -371,7 +374,7 @@ def default_factory(weights: Path, spec: RunSpec, device: str | None):
     return predictor_for_run(weights, spec, device)
 
 
-def evaluate_run(project: Project, run_dir: Path, paths: list[str], conf: float = 0.25, iou: float = 0.7,
+def evaluate_run(project: Project, run_dir: Path, paths: list[str], conf: float = 0.25, iou: float = DEFAULT_NMS_IOU,
                  make_predictor: PredictorFactory = default_factory,
                  devices: list[tuple[str, str]] | None = None,
                  progress: Callable[[int, int], None] | None = None,
@@ -413,7 +416,7 @@ def evaluate_run(project: Project, run_dir: Path, paths: list[str], conf: float 
     )
 
 
-def compare_runs(project: Project, run_dirs: list[Path], conf: float = 0.25, iou: float = 0.7,
+def compare_runs(project: Project, run_dirs: list[Path], conf: float = 0.25, iou: float = DEFAULT_NMS_IOU,
                  make_predictor: PredictorFactory = default_factory,
                  devices: list[tuple[str, str]] | None = None,
                  progress: Callable[[int, int, str], None] | None = None,

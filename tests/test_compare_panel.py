@@ -199,3 +199,11 @@ def test_unet_runs_are_listed_and_compared(panel, window, qapp):
     assert any("unetpp-r18" in panel.run_list.item(i).text() for i in range(3))
     compared(panel, qapp, [window.test_runs[0], unet_run])
     assert [r.training.model for r in panel.results] == ["yolo11n", "unetpp-r18"]
+
+
+def test_nms_iou_default_is_0_5(panel):
+    """0.7 kept a second box on the same broken defect (the two overlapped by 0.5-0.7): every
+    found defect also counted as a false detection on a real project."""
+    from defect_inspection.core import compare as C
+
+    assert C.DEFAULT_NMS_IOU == 0.5 and panel.iou.value() == 0.5

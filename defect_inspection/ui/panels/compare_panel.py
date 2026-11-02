@@ -124,7 +124,7 @@ class ComparePanel(QWidget):
         self.iou = QDoubleSpinBox()
         self.iou.setRange(0.1, 0.95)
         self.iou.setSingleStep(0.05)
-        self.iou.setValue(0.7)
+        self.iou.setValue(C.DEFAULT_NMS_IOU)
         self.priority = QComboBox()
         self.priority.addItems(list(C.PRIORITY_METRICS))
         self.priority.currentIndexChanged.connect(self._update_summary)
