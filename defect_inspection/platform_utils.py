@@ -311,32 +311,44 @@ def pick_korean_font() -> str | None:
 # ---- stdin of the training worker -------------------------------------------------------------
 
 STDIN_POLL_SEC = 0.2  # how often the worker looks for a stop request on Windows
+READ_CHUNK = 4096  # bytes per blocking os.read of stdin
 
 
 def stdin_lines(stream=None, poll_sec: float = STDIN_POLL_SEC):
     """Lines of `stream` (default sys.stdin) until EOF, for the worker's stop watcher thread.
 
+    Reads the file descriptor with os.read and never touches the stream object itself: a thread
+    blocked in sys.stdin's read holds its buffer lock, and a DataLoader worker forked meanwhile
+    (Linux, Ultralytics on CUDA) inherits that lock locked and hangs for ever in multiprocessing's
+    sys.stdin.close() — every GPU training run hung before the first batch.
     On Windows a thread blocked in ReadFile on a synchronous pipe makes every other operation on
-    that pipe wait — including a new process inheriting it: training with DataLoader workers
-    (spawned) hung before the first batch. So a pipe is only read when PeekNamedPipe says bytes
-    are waiting. Elsewhere (and for a console or file) it is a plain blocking read."""
+    that pipe wait — including a new process inheriting it (spawned DataLoader workers) — so a
+    pipe is only read when PeekNamedPipe says bytes are waiting."""
     stream = sys.stdin if stream is None else stream
     if stream is None:  # no stdin at all (windowed exe started without one): nothing to read
         return
-    peek = _pipe_peeker(stream) if IS_WINDOWS else None
-    if peek is None:
+    try:
+        fd = stream.fileno()
+    except (OSError, ValueError, AttributeError):  # no file descriptor (io.StringIO in tests)
         yield from stream
         return
-    yield from _polled_lines(stream.fileno(), peek, poll_sec, time.sleep)
+    peek = _pipe_peeker(fd) if IS_WINDOWS else None
+    if peek is None:  # blocking os.read: returns what is there, holds no Python-level lock
+        peek = _always_read
+    yield from _polled_lines(fd, peek, poll_sec, time.sleep)
 
 
-def _pipe_peeker(stream):
-    """A function giving the bytes waiting in `stream`'s pipe (None at EOF), or None if no pipe."""
+def _always_read() -> int:
+    return READ_CHUNK
+
+
+def _pipe_peeker(fd: int):
+    """A function giving the bytes waiting in `fd`'s pipe (None at EOF), or None if no pipe."""
     try:
         import _winapi
         import msvcrt
 
-        handle = msvcrt.get_osfhandle(stream.fileno())
+        handle = msvcrt.get_osfhandle(fd)
         _winapi.PeekNamedPipe(handle, 0)
     except (ImportError, OSError, ValueError, AttributeError):
         return None  # no pipe (console, file), or already closed: read it the plain way
@@ -356,7 +368,13 @@ def _polled_lines(fd: int, peek, poll_sec: float, sleep):
         if waiting == 0:
             sleep(poll_sec)
             continue
-        data = os.read(fd, waiting)
+        try:
+            data = os.read(fd, waiting)
+        except BlockingIOError:  # someone made the pipe non-blocking: wait like for an empty pipe
+            sleep(poll_sec)
+            continue
+        except OSError:  # descriptor closed or broken: treat as EOF, so the worker stops
+            break
         if not data:
             break
         *lines, pending = (pending + data).split(b"\n")

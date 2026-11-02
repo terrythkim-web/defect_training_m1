@@ -247,54 +247,94 @@ def test_stdin_lines_reads_a_plain_stream():
     assert list(pu.stdin_lines(io.StringIO("a\nstop\n"))) == ["a\n", "stop\n"]
 
 
+class DescriptorOnly:
+    """A stream that may only be asked for its descriptor."""
+
+    def __init__(self, fd):
+        self.fd = fd
+
+    def fileno(self):
+        return self.fd
+
+    def __getattr__(self, name):
+        raise AssertionError(f"stream.{name} used")
+
+    def __iter__(self):
+        raise AssertionError("stream iterated")
+
+
+def test_stdin_lines_read_the_descriptor_not_the_stream():
+    """A real pipe is read with os.read on its descriptor; the stream object is never used."""
+    r, w = os.pipe()
+    os.write(w, b"noise\r\nstop\n")
+    os.close(w)
+    try:
+        assert list(pu.stdin_lines(DescriptorOnly(r))) == ["noise\n", "stop\n"]
+    finally:
+        os.close(r)
+
+
+def test_read_error_ends_the_lines():
+    r, w = os.pipe()
+    os.close(r)
+    os.close(w)
+    assert list(pu._polled_lines(r, lambda: 4, 0.0, lambda s: None)) == []  # EBADF = EOF
+
+
 def test_stdin_lines_without_stdin(monkeypatch):
     monkeypatch.setattr(pu.sys, "stdin", None)
     assert list(pu.stdin_lines()) == []
 
 
-def run_script(tmp_path, code):
+def run_script(tmp_path, code, *args):
     import subprocess
 
     script = tmp_path / "script.py"
     script.write_text(code, encoding="utf-8")
-    return subprocess.Popen([sys.executable, str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    return subprocess.Popen([sys.executable, str(script), *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
 
 
 SPAWN_WHILE_WATCHING = """
-import multiprocessing, os, threading, time
+import multiprocessing, os, sys, threading, time
 from defect_inspection import platform_utils
 
 if __name__ == "__main__":
     threading.Thread(target=lambda: list(platform_utils.stdin_lines()), daemon=True).start()
     time.sleep(0.5)  # the watcher is now waiting for stdin
-    child = multiprocessing.get_context("spawn").Process(target=os.getpid)
+    child = multiprocessing.get_context(sys.argv[1]).Process(target=os.getpid)
     child.start()
     child.join(60)
     print("child exit", child.exitcode, flush=True)
 """
 
 
-def test_spawning_while_stdin_is_watched(tmp_path):
+@pytest.mark.parametrize("method", ["spawn", "fork"])
+def test_spawning_while_stdin_is_watched(tmp_path, method):
     """The training worker's case: a thread waits for a stop line on the stdin PIPE (kept open)
-    while DataLoader workers are spawned. With a blocking read, Windows never started the child."""
+    while DataLoader workers start. spawn: with a blocking read Windows never started the child.
+    fork (Linux; Ultralytics on CUDA): a child forked while the thread held sys.stdin's buffer lock
+    hung for ever in multiprocessing's sys.stdin.close() — every GPU training run on Linux."""
+    import multiprocessing
     import subprocess
 
-    proc = run_script(tmp_path, SPAWN_WHILE_WATCHING)
+    if method not in multiprocessing.get_all_start_methods():
+        pytest.skip(f"no {method} on this OS")
+    proc = run_script(tmp_path, SPAWN_WHILE_WATCHING, method)
     try:
-        proc.wait(timeout=120)
+        proc.wait(timeout=90)  # longer than the script's own join(60)
     except subprocess.TimeoutExpired:
         proc.kill()
         pytest.fail("spawning a process hung while stdin was being read")
     finally:
         proc.stdin.close()
-    assert proc.stdout.read().strip() == "child exit 0"
+    assert proc.stdout.read().strip().splitlines()[-1] == "child exit 0"
 
 
 @pytest.mark.skipif(not pu.IS_WINDOWS, reason="PeekNamedPipe is Windows only")
 def test_windows_pipe_is_polled(tmp_path):
     proc = run_script(tmp_path, "import sys\nfrom defect_inspection import platform_utils as p\n"
-                                "print(p._pipe_peeker(sys.stdin) is not None, flush=True)\n"
+                                "print(p._pipe_peeker(sys.stdin.fileno()) is not None, flush=True)\n"
                                 "print(list(p.stdin_lines()), flush=True)\n")
     try:
         assert proc.stdout.readline().strip() == "True"

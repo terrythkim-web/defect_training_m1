@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -246,3 +247,64 @@ def test_trained_model_export_matches(tmp_path, nms):
     assert v.torch_detections > 0, "model should detect the training blobs"
     assert v.passed, v.message
     assert v.min_iou >= X.VERIFY_IOU
+
+
+@pytest.mark.parametrize("shape, pt_rect", [([1, 3, 64, 64], False), (["batch", 3, "height", "width"], True)])
+def test_verification_gives_pytorch_the_onnx_input_size(monkeypatch, shape, pt_rect):
+    """A fixed-size ONNX gets every image padded to the full square, while Ultralytics pads a
+    PyTorch model only to a multiple of 32 (rect). With non-square images (1024×512 photos) the two
+    saw different inputs and the check failed for a correct export; PyTorch now gets the square."""
+    import onnxruntime
+    import ultralytics
+
+    class Io:
+        def __init__(self, shape):
+            self.name, self.shape = "images", shape
+
+    class Session:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_inputs(self):
+            return [Io(shape)]
+
+        def get_outputs(self):
+            return [Io([1, 6, 84])]
+
+    calls = []
+
+    class FakeYolo:
+        def __init__(self, path, task=None):
+            self.path = str(path)
+
+        def predict(self, image, **kwargs):
+            calls.append((self.path.endswith(".onnx"), kwargs))
+            return [None]
+
+    monkeypatch.setattr(onnxruntime, "InferenceSession", Session)
+    monkeypatch.setattr(ultralytics, "YOLO", FakeYolo)
+    monkeypatch.setattr(X, "results_to_predictions", lambda result, task: [])
+    v = X.verify_onnx(Path("m.onnx"), Path("best.pt"), "detect", [np.zeros((64, 32, 3), np.uint8)], 64, 3)
+    assert v.passed
+    (pt_kwargs,) = [kw for is_onnx, kw in calls if not is_onnx]
+    assert pt_kwargs.get("rect", True) is pt_rect
+
+
+def test_coreml_verification_gives_pytorch_the_square(monkeypatch):
+    import ultralytics
+
+    calls = []
+
+    class FakeYolo:
+        def __init__(self, path, task=None):
+            self.path = str(path)
+
+        def predict(self, image, **kwargs):
+            calls.append((self.path.endswith(".mlpackage"), kwargs))
+            return [None]
+
+    monkeypatch.setattr(ultralytics, "YOLO", FakeYolo)
+    monkeypatch.setattr(X, "results_to_predictions", lambda result, task: [])
+    X.verify_coreml(Path("m.mlpackage"), Path("best.pt"), "detect", [np.zeros((64, 32, 3), np.uint8)], 64)
+    (pt_kwargs,) = [kw for is_ml, kw in calls if not is_ml]
+    assert pt_kwargs["rect"] is False

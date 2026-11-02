@@ -299,3 +299,46 @@ def test_low_resolution_scores_map_onto_the_image():
     label[8:16, 20:40] = 1
     (p,) = unet.label_map_to_predictions(label, prob, conf=0.5)
     assert p.score == pytest.approx(0.8) and p.shape.bounds() == (20, 8, 40, 16)
+
+
+# ---- GPU memory (found on an RTX 3060 12 GB) -------------------------------------------------------
+
+def test_auto_batch_scales_with_gpu_memory_and_image_size():
+    """A fixed batch 8 trained at 512 px (9.8 GB peak) but ran out of memory at 1024 px."""
+    gib = 2**30
+    rtx3060 = 12_884_377_600  # what torch reports for a "12 GB" card: a bit under 12 GiB
+    assert unet.auto_batch("cuda:0", 512, gpu_bytes=rtx3060) == 8  # measured 9.8 GB peak
+    assert unet.auto_batch("cuda:0", 1024, gpu_bytes=rtx3060) == 2  # batch 1 measured 5.1 GB
+    assert unet.auto_batch("cuda:0", 512, gpu_bytes=8 * gib) == 4
+    assert unet.auto_batch("cuda:0", 2048, gpu_bytes=12 * gib) == 1
+    assert unet.auto_batch("cuda:0", 128, gpu_bytes=24 * gib) == 16  # capped
+    assert unet.auto_batch("cpu", 512) == 4 and unet.auto_batch("cpu", 1024) == 1
+
+
+def test_auto_batch_leaves_memory_other_processes_hold(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device=None: (5 * 2**30, 12 * 2**30))
+    assert unet.auto_batch("cuda:0", 512) == 2  # 5 GiB free, not 85 % of 12
+
+
+@pytest.mark.parametrize("kind", ["cuda", "mps", "other"])
+def test_out_of_memory_is_explained(tmp_path, monkeypatch, kind):
+    import torch
+
+    error = {"cuda": torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB"),
+             "mps": RuntimeError("MPS backend out of memory (MPS allocated: 8 GB)"),
+             "other": RuntimeError("shape mismatch")}[kind]
+    spec = tiny_spec(tmp_path, epochs=1)
+
+    class OomModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(1))
+
+        def forward(self, x):
+            raise error
+
+    monkeypatch.setattr(unet, "build_model", lambda *a, **k: (OomModel(), None))
+    with pytest.raises(RuntimeError, match="GPU 메모리가 부족합니다.*batch" if kind != "other" else "shape mismatch"):
+        unet.train_unet(spec, tmp_path, lambda e: None, lambda: False, False, Stop)

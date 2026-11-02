@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -244,8 +245,53 @@ def _loader(pairs, channels: int, size: int, batch: int, shuffle: bool, workers:
                       num_workers=workers, generator=gen, drop_last=False, **extra)
 
 
-def auto_batch(device: str) -> int:
-    return 8 if device.startswith("cuda") else 4
+# Training memory on an RTX 3060 (unetpp-r18): batch 8 at 512 px → 9.8 GB peak, batch 1 at 1024 px →
+# 5.1 GB, i.e. ~0.4 GB fixed + ~1.18 GB per image at 512 px (grows with size²). resnet34 measured only
+# ~5 % more (reserved 9.21 vs 8.68 GB at batch 8 / 512 px), inside the margin, so one rule for both.
+GB_PER_IMAGE_512 = 1.2
+FIXED_GB = 0.4
+GPU_MEMORY_SHARE = 0.85  # leave the rest to the display
+CPU_BATCH_512 = 4
+MAX_AUTO_BATCH = 16
+
+
+@contextmanager
+def _explain_oom(batch: int, size: int, auto: bool):
+    """GPU out-of-memory → a message the user can act on (the raw one names GiB and allocators).
+    CUDA raises torch.cuda.OutOfMemoryError; Apple MPS a plain RuntimeError "MPS backend out of memory"."""
+    import torch
+
+    try:
+        yield
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+        if not isinstance(e, torch.cuda.OutOfMemoryError) and "out of memory" not in str(e):
+            raise
+        which = f"자동 batch {batch}" if auto else f"batch {batch}"
+        raise RuntimeError(f"GPU 메모리가 부족합니다 ({which}, 이미지 {size}px). "
+                           "Train 탭에서 batch를 직접 더 작게 정하거나 이미지 크기를 낮추세요.") from e
+
+
+def _usable_gpu_bytes(device: str) -> float:
+    """85 % of the card, or less if other processes (the app's own predictor, SAM) already hold it."""
+    import torch
+
+    free, total = torch.cuda.mem_get_info(torch.device(device))
+    return min(free, GPU_MEMORY_SHARE * total)
+
+
+def auto_batch(device: str, size: int, gpu_bytes: int | None = None) -> int:
+    """Batch for "자동": what fits the GPU memory at this input size (memory grows with size²;
+    a fixed 8 ran out of 12 GB at 1024 px), or 4 images at 512 px on the CPU. Power of two."""
+    scale = (size / 512) ** 2
+    if device.startswith("cuda"):
+        usable = GPU_MEMORY_SHARE * gpu_bytes if gpu_bytes is not None else _usable_gpu_bytes(device)
+        fit = (usable / 2**30 - FIXED_GB) / (GB_PER_IMAGE_512 * scale)
+    else:
+        fit = CPU_BATCH_512 / scale
+    batch = 1
+    while batch * 2 <= min(fit, MAX_AUTO_BATCH):
+        batch *= 2
+    return batch
 
 
 def _save(obj: dict, path: Path) -> None:
@@ -325,7 +371,7 @@ def train_unet(spec, run_dir: Path, emit: Callable[[dict], None], should_stop: C
     # seed + start: a resumed run must not replay epoch 1's shuffle and flips
     torch.manual_seed(cfg.seed + start)
     np.random.seed(cfg.seed + start)
-    batch = cfg.batch if cfg.batch > 0 else auto_batch(device)
+    batch = cfg.batch if cfg.batch > 0 else auto_batch(device, size)
     if cfg.batch <= 0:
         print(f"자동 batch: {batch} (장치 {device})", flush=True)
     workers = min(cfg.workers, 4)
@@ -335,49 +381,50 @@ def train_unet(spec, run_dir: Path, emit: Callable[[dict], None], should_stop: C
           "params": int(sum(p.numel() for p in model.parameters()))})
     meta = checkpoint_meta(spec, size)
     t0 = time.time()
-    for epoch in range(start + 1, cfg.epochs + 1):
-        model.train()
-        total, n = 0.0, 0
-        for x, y in train_loader:
-            if should_stop():
-                raise stop_exc()
-            optimizer.zero_grad()
-            loss = loss_fn(model(x.to(device)), y.to(device))
-            loss.backward()
-            optimizer.step()
-            total += loss.item() * len(x)
-            n += len(x)
-        scheduler.step()
-        train_loss = round(total / max(n, 1), 6)
-        emit({"type": "train_epoch", "epoch": epoch, "epochs": cfg.epochs, "losses": {"train/seg_loss": train_loss}})
+    with _explain_oom(batch, size, auto=cfg.batch <= 0):
+        for epoch in range(start + 1, cfg.epochs + 1):
+            model.train()
+            total, n = 0.0, 0
+            for x, y in train_loader:
+                if should_stop():
+                    raise stop_exc()
+                optimizer.zero_grad()
+                loss = loss_fn(model(x.to(device)), y.to(device))
+                loss.backward()
+                optimizer.step()
+                total += loss.item() * len(x)
+                n += len(x)
+            scheduler.step()
+            train_loss = round(total / max(n, 1), 6)
+            emit({"type": "train_epoch", "epoch": epoch, "epochs": cfg.epochs, "losses": {"train/seg_loss": train_loss}})
 
-        model.eval()
-        metrics, val_loss = evaluate(model, val_loader, spec.nc, device, loss_fn, should_stop, stop_exc)
-        metrics["val/seg_loss"] = round(val_loss or 0.0, 6)
-        fitness = metrics["metrics/IoU"]
-        if fitness > best_fitness:
-            best_fitness, best_epoch = fitness, epoch
-            _save({**meta, "state_dict": model.state_dict(), "epoch": epoch, "best_fitness": best_fitness},
-                  best_path)
-        _save({**meta, "state_dict": model.state_dict(), "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(), "epoch": epoch, "best_fitness": best_fitness,
-                    "best_epoch": best_epoch}, last_path)
-        elapsed = time.time() - t0
-        done_epochs = epoch - start
-        emit({"type": "epoch", "epoch": epoch, "epochs": cfg.epochs, "losses": {"train/seg_loss": train_loss},
-              "metrics": metrics, "fitness": fitness, "best_fitness": best_fitness,
-              "lr": {"lr/pg0": round(optimizer.param_groups[0]["lr"], 8)}, "elapsed_s": round(elapsed, 2),
-              "eta_s": round(elapsed / done_epochs * (cfg.epochs - epoch), 2)})
-        write_status(run_dir, {"epoch": epoch, "epochs": cfg.epochs, "best_fitness": best_fitness,
-                               "metrics": metrics})
-        if cfg.patience and epoch - best_epoch >= cfg.patience:
-            print(f"{cfg.patience} epoch 동안 개선이 없어 조기 종료합니다 (최고 epoch {best_epoch})", flush=True)
-            break
+            model.eval()
+            metrics, val_loss = evaluate(model, val_loader, spec.nc, device, loss_fn, should_stop, stop_exc)
+            metrics["val/seg_loss"] = round(val_loss or 0.0, 6)
+            fitness = metrics["metrics/IoU"]
+            if fitness > best_fitness:
+                best_fitness, best_epoch = fitness, epoch
+                _save({**meta, "state_dict": model.state_dict(), "epoch": epoch, "best_fitness": best_fitness},
+                      best_path)
+            _save({**meta, "state_dict": model.state_dict(), "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(), "epoch": epoch, "best_fitness": best_fitness,
+                        "best_epoch": best_epoch}, last_path)
+            elapsed = time.time() - t0
+            done_epochs = epoch - start
+            emit({"type": "epoch", "epoch": epoch, "epochs": cfg.epochs, "losses": {"train/seg_loss": train_loss},
+                  "metrics": metrics, "fitness": fitness, "best_fitness": best_fitness,
+                  "lr": {"lr/pg0": round(optimizer.param_groups[0]["lr"], 8)}, "elapsed_s": round(elapsed, 2),
+                  "eta_s": round(elapsed / done_epochs * (cfg.epochs - epoch), 2)})
+            write_status(run_dir, {"epoch": epoch, "epochs": cfg.epochs, "best_fitness": best_fitness,
+                                   "metrics": metrics})
+            if cfg.patience and epoch - best_epoch >= cfg.patience:
+                print(f"{cfg.patience} epoch 동안 개선이 없어 조기 종료합니다 (최고 epoch {best_epoch})", flush=True)
+                break
 
-    best_model, _ = load_model(best_path, device)
-    final, _ = evaluate(best_model, val_loader, spec.nc, device, None, should_stop, stop_exc)
-    emit({"type": "final", "metrics": final, "fitness": final["metrics/IoU"]})
-    write_status(run_dir, {"final_metrics": final})
+        best_model, _ = load_model(best_path, device)
+        final, _ = evaluate(best_model, val_loader, spec.nc, device, None, should_stop, stop_exc)
+        emit({"type": "final", "metrics": final, "fitness": final["metrics/IoU"]})
+        write_status(run_dir, {"final_metrics": final})
 
 
 # ---- prediction -----------------------------------------------------------------------------------

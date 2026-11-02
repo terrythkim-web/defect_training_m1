@@ -190,7 +190,8 @@ def verify_coreml(package: Path, weights: Path, task: str, images: list[np.ndarr
     worst_iou, worst_diff, ok = None, None, True
     for image in images:
         tp = results_to_predictions(pt_model.predict(image, imgsz=imgsz, conf=VERIFY_CONF, verbose=False,
-                                                     device=resolve_device("auto", "verify"))[0], task)
+                                                     device=resolve_device("auto", "verify"),
+                                                     rect=False)[0], task)  # .mlpackage is a fixed square
         mp = results_to_predictions(ml_model.predict(image, imgsz=imgsz, conf=VERIFY_CONF, verbose=False)[0], task)
         match_ok, iou, diff = compare_predictions(tp, mp, COREML_VERIFY_IOU)
         ok = ok and match_ok
@@ -228,12 +229,16 @@ def verify_onnx(onnx_path: Path, weights: Path, task: str, images: list[np.ndarr
     # (detect post-processing on a seg model) breaks prediction.
     yolo_task = "segment" if task == "seg" else "detect"
     device = resolve_device("auto", "verify")  # CPU on purpose: compare like with like
+    # Ultralytics pads a PyTorch model's input only to a multiple of 32 (rect) but a fixed-size ONNX
+    # to the full imgsz square; give PyTorch the same square, or non-square images (1024×512
+    # photos) never matched a correct export.
+    pt_rect = not all(isinstance(d, int) for d in shape[2:])
     pt_model = YOLO(str(weights), task=yolo_task)
     onnx_model = YOLO(str(onnx_path), task=yolo_task)
     worst_iou, worst_diff, ok = None, None, True
     for image in images:
         tp = results_to_predictions(pt_model.predict(image, imgsz=imgsz, conf=VERIFY_CONF, verbose=False,
-                                                     device=device)[0], task)
+                                                     device=device, rect=pt_rect)[0], task)
         op = results_to_predictions(onnx_model.predict(image, imgsz=imgsz, conf=VERIFY_CONF, verbose=False,
                                                        device=device)[0], task)
         match_ok, iou, diff = compare_predictions(tp, op)
