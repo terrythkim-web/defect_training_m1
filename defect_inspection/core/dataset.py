@@ -258,6 +258,9 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
     cfg = project.config
     if not cfg.classes:
         raise DatasetBuildError("클래스가 없습니다. 클래스를 추가하고 라벨링하세요.")
+    from defect_inspection.core.dataset_inputs import dataset_inputs
+
+    inputs = dataset_inputs(project, "full")  # taken before building: edits during the build count as changes
     defect, ok, skipped = select_images(project)
     if not defect:
         raise DatasetBuildError("라벨된 이미지가 없습니다. 결함 이미지를 라벨링하세요.")
@@ -378,7 +381,8 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
         report.elapsed_s = round(time.monotonic() - started, 2)
         info = {"report": asdict(report), "task": cfg.task, "channels": channels,
                 "seed": cfg.split.seed, "val_ratio": cfg.split.val_ratio,
-                "augment": aug_cfg.model_dump(mode="json")}
+                "augment": aug_cfg.model_dump(mode="json"),
+                "inputs": inputs}  # dataset_inputs.dataset_changes: outdated-dataset warning
         atomic_write_text(work_dir / "build_info.yaml", yaml.safe_dump(info, allow_unicode=True, sort_keys=False))
     except BaseException:
         shutil.rmtree(work_dir, ignore_errors=True)

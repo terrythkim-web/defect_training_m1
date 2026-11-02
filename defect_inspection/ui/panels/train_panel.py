@@ -53,7 +53,9 @@ class TrainPanel(QWidget):
         self.active_run: Path | None = None
         self._run_log = RunLog()  # active run's train.log (every line shown in the log tab is saved)
         # Main window hook: save pending edits and refuse while a dataset build runs.
-        self.before_start: Callable[[], bool] = lambda: True
+        # (config of a new run, None for a resume) -> may it start? (main window: saves, checks the dataset)
+        self.before_start: Callable[[TrainConfig | None], bool] = lambda config: True
+        self.start_notes: list[str] = []  # logged (and kept in train.log) when the next run starts
         self._build_ui()
         self.set_project(None)
 
@@ -151,11 +153,13 @@ class TrainPanel(QWidget):
 
     def start(self, config: TrainConfig | None = None) -> bool:
         """Start a run with the form's settings, or with `config` (e.g. the quick suggestion run)."""
-        if self.project is None or self.running or not self.before_start():
+        config = config or self.current_config()
+        if self.project is None or self.running or not self.before_start(config):
             return False
         try:
-            run = prepare_run(self.project, config or self.current_config(), self.weights_dir)
+            run = prepare_run(self.project, config, self.weights_dir)
         except ValueError as e:
+            self.start_notes = []
             QMessageBox.warning(self, self.tr("학습 시작"), str(e))
             return False
         self._launch(run, resume=False)
@@ -163,7 +167,7 @@ class TrainPanel(QWidget):
 
     def resume_selected(self) -> bool:
         run = self.selected_run()
-        if run is None or not run.resumable or self.running or not self.before_start():
+        if run is None or not run.resumable or self.running or not self.before_start(None):
             return False
         self._launch(run.path, resume=True)
         self.charts.show_series(EpochSeries.from_events(read_events(run.path)))
@@ -182,6 +186,9 @@ class TrainPanel(QWidget):
         self._log(log_header(resume))
         if not resume:
             self._log_dataset_warnings(run)
+        for note in self.start_notes:
+            self._log(note)
+        self.start_notes = []
         self.progress.setValue(0)
         self._log(self.tr("{0}: {1}").format(self.tr("재개") if resume else self.tr("시작"), run.name))
         self.process.start(run, resume=resume)

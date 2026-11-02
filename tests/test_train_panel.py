@@ -311,11 +311,15 @@ def test_start_refused_during_dataset_build(window, panel, monkeypatch):
     assert not panel.start() and shown and "빌드" in shown[0]
 
 
-def test_start_saves_unsaved_labels(window, panel, qapp):
+def test_start_saves_unsaved_labels(window, panel, qapp, monkeypatch):
+    asked = []
+    monkeypatch.setattr(window, "_ask_rebuild", lambda mode, changes: asked.append(changes) or "train")
     assert wait_until(qapp, lambda: window.session is not None)
     window.session.add_shape(BBox(class_id=0, x1=1, y1=1, x2=9, y2=9))
     panel.start()
     assert window.project.label_status(window.session.image_path).confirmed == 2
+    assert asked == [["라벨이 바뀐 이미지 1장"]]  # saved first, so the dataset check sees the new label
+    assert "오래된 데이터셋으로 학습합니다" in panel.log_view.toPlainText()
     assert wait_until(qapp, lambda: not panel.running)
 
 

@@ -330,6 +330,9 @@ class MainWindow(QMainWindow):
         self.augment_panel.build_finished.connect(self._on_quick_build_finished)
         self.augment_panel.build_stopped.connect(self._on_quick_build_stopped)
         self._quick_stage: str | None = None  # None / "build" / "train"
+        self._train_after_build = None  # TrainConfig waiting for "다시 빌드 후 학습" (_before_training)
+        self.augment_panel.build_finished.connect(self._on_rebuild_finished)
+        self.augment_panel.build_stopped.connect(self._on_rebuild_stopped)
         self.compare_panel = ComparePanel()
         self.compare_panel.open_image.connect(self.open_image_for_labeling)
         self.compare_panel.experiment_requested.connect(self.start_compare_experiment)
@@ -1134,12 +1137,57 @@ class MainWindow(QMainWindow):
         if self.roi_session is not None:
             self.roi_bar.set_counts(len(self.roi_session.image_rois), len(self.roi_session.common))
 
-    def _before_training(self) -> bool:
+    def _before_training(self, config=None) -> bool:
+        """Before a run starts: no build running, everything saved, and for a new run (`config`;
+        None = resume, which keeps its dataset) a dataset that matches the project — otherwise
+        ask to rebuild it first (`_ask_rebuild`) and start the run when the build is done."""
         if self.augment_panel.is_building:
             QMessageBox.information(self, self.tr("학습 시작"), self.tr("데이터셋 빌드가 끝난 뒤에 학습을 시작하세요."))
             return False
         self._save_all()
-        return True
+        if config is None or self.project is None or self._quick_stage is not None or self._exp_stage is not None:
+            return True  # quick suggest / experiments have just built the dataset themselves
+        from defect_inspection.core.dataset_inputs import dataset_changes
+
+        changes = dataset_changes(self.project, config.dataset)
+        if not changes:
+            return True
+        choice = self._ask_rebuild(config.dataset, changes)
+        if choice == "train":
+            self.train_panel.start_notes = [
+                self.tr("⚠ 오래된 데이터셋으로 학습합니다 (바뀐 것: {0})").format(", ".join(changes))]
+            return True
+        if choice == "rebuild":
+            self._train_after_build = config
+            self.augment_panel.start_build(config.dataset)
+        return False
+
+    def _ask_rebuild(self, mode: str, changes: list[str]) -> str:
+        """"rebuild" / "train" / "cancel" (tests replace this)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(self.tr("데이터셋이 오래됨"))
+        box.setText(self.tr("{0} 데이터셋을 만든 뒤 프로젝트가 바뀌었습니다.").format(mode.capitalize()))
+        box.setInformativeText("\n".join(f"· {c}" for c in changes) + "\n\n"
+                               + self.tr("그대로 학습하면 바뀐 내용이 학습과 검증에 반영되지 않습니다."))
+        rebuild = box.addButton(self.tr("다시 빌드 후 학습"), QMessageBox.ButtonRole.AcceptRole)
+        anyway = box.addButton(self.tr("그대로 학습"), QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(self.tr("취소"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(rebuild)
+        box.exec()
+        clicked = box.clickedButton()
+        return "rebuild" if clicked is rebuild else "train" if clicked is anyway else "cancel"
+
+    def _on_rebuild_finished(self, _report) -> None:
+        config, self._train_after_build = self._train_after_build, None
+        if config is not None:
+            self.tabs.setCurrentWidget(self.train_panel)
+            self.train_panel.start(config)
+
+    def _on_rebuild_stopped(self, message: str) -> None:
+        if self._train_after_build is not None:
+            self._train_after_build = None
+            self.statusBar().showMessage(self.tr("데이터셋 빌드가 끝나지 않아 학습을 시작하지 않았습니다"), 8000)
 
     def _training_blocks_project_change(self) -> bool:
         if self.train_panel.running:

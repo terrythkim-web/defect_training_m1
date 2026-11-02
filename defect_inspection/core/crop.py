@@ -275,6 +275,9 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
     store = RoiStore(project.root)
     if ccfg.use_roi and not store.has_any() and not (ccfg.use_defect or ccfg.use_background or ccfg.use_tiles):
         raise DatasetBuildError("그려진 ROI가 없습니다. 캔버스에서 Crop ROI 도구(C)로 영역을 그리세요.")
+    from defect_inspection.core.dataset_inputs import dataset_inputs
+
+    inputs = dataset_inputs(project, "crop")  # taken before building: edits during the build count as changes
     defect, ok, skipped = select_images(project)
     if not defect:
         raise DatasetBuildError("라벨된 이미지가 없습니다. 결함 이미지를 라벨링하세요.")
@@ -392,7 +395,8 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
                 "crop": ccfg.model_dump(mode="json"), "augment": aug_cfg.model_dump(mode="json"),
                 # read by tiling inference / ONNX metadata (F7.6, F6): the window size the model saw
                 "window": {"size": ccfg.tile_size if ccfg.use_tiles else ccfg.crop_size,
-                           "overlap_px": ccfg.overlap_pixels() if ccfg.use_tiles else None}}
+                           "overlap_px": ccfg.overlap_pixels() if ccfg.use_tiles else None},
+                "inputs": inputs}  # dataset_inputs.dataset_changes: outdated-dataset warning
         atomic_write_text(work_dir / "build_info.yaml", yaml.safe_dump(info, allow_unicode=True, sort_keys=False))
     except BaseException:
         shutil.rmtree(work_dir, ignore_errors=True)
