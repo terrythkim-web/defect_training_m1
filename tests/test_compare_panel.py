@@ -198,7 +198,9 @@ def test_unet_runs_are_listed_and_compared(panel, window, qapp):
     assert panel.run_list.count() == 3
     assert any("unetpp-r18" in panel.run_list.item(i).text() for i in range(3))
     compared(panel, qapp, [window.test_runs[0], unet_run])
-    assert [r.training.model for r in panel.results] == ["yolo11n", "unetpp-r18"]
+    # runs are listed newest first by run_id (<time>_<model>): the order depends on whether both
+    # runs were created in the same second, so compare without it
+    assert sorted(r.training.model for r in panel.results) == ["unetpp-r18", "yolo11n"]
 
 
 def test_nms_iou_default_is_0_5(panel):
