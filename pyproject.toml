@@ -44,6 +44,9 @@ testpaths = ["tests"]
 # Slow tests (real training/export) run only on request: pytest -m slow
 addopts = "-m 'not slow'"
 markers = ["slow: real model training/export, minutes on CPU"]
+# Keep tmp_path folders of failed tests only: a full run leaves ~2 GB of projects/datasets, and the
+# default (last 3 runs) filled a 5.9 GB tmpfs /tmp on WSL.
+tmp_path_retention_policy = "failed"
 
 [tool.coverage.run]
 # pytest --cov: sysmon (Python 3.12+) traces every thread, also QThreads coverage's tracer never sees;
