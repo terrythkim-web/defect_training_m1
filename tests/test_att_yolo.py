@@ -66,6 +66,14 @@ def test_invalid_arguments():
         att_yolo_config("classify", 1, 3, "s")
 
 
+@pytest.mark.parametrize("task", ["detect", "seg"])
+def test_yaml_has_no_aliases(tmp_path, task):
+    """Ultralytics 8.4.198 refuses YAML anchors/aliases ("anchors, aliases and tags are not
+    supported"); safe_dump wrote `&id001`/`*id001` for a list used twice in the head."""
+    text = write_att_yolo_yaml(tmp_path / "att.yaml", task, 2, scale="n").read_text(encoding="utf-8")
+    assert "&id" not in text and "*id" not in text
+
+
 def test_yaml_roundtrip(tmp_path):
     path = write_att_yolo_yaml(tmp_path / "모델 설정" / "att.yaml", "seg", 3, channels=1, scale="n")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))

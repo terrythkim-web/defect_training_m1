@@ -100,6 +100,14 @@ def att_yolo_config(task: TaskMode, nc: int, channels: int = 3, scale: Scale = "
     }
 
 
+class _NoAliasDumper(yaml.SafeDumper):
+    """safe_dump writes `&id001`/`*id001` for a list used twice (the head reuses the level list),
+    and Ultralytics ≥ 8.4.198 refuses YAML anchors and aliases."""
+
+    def ignore_aliases(self, data) -> bool:
+        return True
+
+
 def write_att_yolo_yaml(path: str | Path, task: TaskMode, nc: int, channels: int = 3,
                         scale: Scale = "s") -> Path:
     """Save the definition next to a training run (Ultralytics loads models from files, and the
@@ -109,7 +117,7 @@ def write_att_yolo_yaml(path: str | Path, task: TaskMode, nc: int, channels: int
     cfg = att_yolo_config(task, nc, channels, scale)
     header = "# ATT-YOLO (Ultralytics adaptation), see defect_inspection/core/att_yolo.py\n"
     with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(header + yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+        f.write(header + yaml.dump(cfg, Dumper=_NoAliasDumper, sort_keys=False, allow_unicode=True))
     return path
 
 
