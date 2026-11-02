@@ -231,3 +231,31 @@ def test_every_transform_builds_across_strengths(strength):
     # Albumentations validates ranges (e.g. Illumination intensity <= 0.2); the slider ends must work.
     for spec in TRANSFORMS:
         spec.build(strength)
+
+
+# ---- brightness inversion (dark-on-light defects -> light-on-dark) ---------------------------
+
+@pytest.mark.parametrize("channels", [1, 3])
+def test_invert_flips_brightness_and_keeps_labels(channels):
+    rng = np.random.default_rng(3)
+    img = rng.integers(0, 255, (H, W) if channels == 1 else (H, W, 3), dtype=np.uint8)
+    r = Augmenter(only("invert"), channels=channels, seed=0)(img, ann(BOX, POLY))
+    assert np.array_equal(r.image, 255 - img)
+    assert [s.to_points() for s in r.annotations.shapes] == [BOX.to_points(), POLY.to_points()]
+
+
+def test_invert_is_offered_for_grayscale_and_off_in_presets():
+    assert "invert" in {t.key for t in available_transforms(1)}
+    assert all(not cfg.setting("invert").enabled for cfg in BUILTIN_PRESETS.values())
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_invert_runs_before_geometry_so_padding_stays_black(seed):
+    """Rotation/translation pad with black; inverted after them the padding would turn white,
+    a bright frame no real image has."""
+    cfg = AugmentConfig(transforms={"translate": TransformSetting(enabled=True, p=1, strength=1),
+                                    "invert": TransformSetting(enabled=True, p=1, strength=0.5)})
+    aug = Augmenter(cfg, channels=1, seed=seed)
+    assert type(aug.pipeline.transforms[0]).__name__ == "InvertImg"
+    r = aug(np.zeros((H, W), np.uint8), ann(BOX))
+    assert set(np.unique(r.image)) <= {0, 255} and (r.image == 255).mean() > 0.5

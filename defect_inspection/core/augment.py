@@ -48,6 +48,7 @@ class TransformSpec:
     build: Callable[[float], A.BasicTransform]  # strength in [0, 1] -> transform (p set later)
     color_only: bool = False  # needs a colour image (disabled for grayscale projects)
     geometric: bool = False
+    first: bool = False  # applied before every other transform (see `pipeline_order`)
 
 
 def _odd(n: float) -> int:
@@ -79,6 +80,10 @@ TRANSFORMS: list[TransformSpec] = [
                   lambda s: A.HueSaturationValue(hue_shift_limit=20 * s, sat_shift_limit=30 * s,
                                                  val_shift_limit=0), color_only=True),
     TransformSpec("clahe", "CLAHE", "광학", lambda s: A.CLAHE(clip_limit=(1, 1 + 3 * s))),
+    # 255 - pixel: a defect seen only dark on a light surface also shows up light on a dark one. It has
+    # no strength (like a flip) and runs first: inverted after a rotation, the black padding would
+    # become a white frame no real image has.
+    TransformSpec("invert", "밝기 반전", "광학", lambda s: A.InvertImg(), first=True),
     # 노이즈·블러
     TransformSpec("gauss_noise", "가우시안 노이즈", "노이즈·블러",
                   lambda s: A.GaussNoise(std_range=(0.005, 0.01 + 0.07 * s))),
@@ -107,6 +112,11 @@ def available_transforms(channels: int) -> list[TransformSpec]:
     return [t for t in TRANSFORMS if t.key in keys]
 
 
+def pipeline_order(specs: list[TransformSpec]) -> list[TransformSpec]:
+    """Order the pipeline applies transforms in: `first` ones, then the registry (UI) order."""
+    return sorted(specs, key=lambda t: not t.first)
+
+
 @dataclass
 class AugmentResult:
     image: np.ndarray
@@ -121,7 +131,7 @@ class Augmenter:
         self.config = config
         self.channels = channels
         steps = []
-        for spec in available_transforms(channels):
+        for spec in pipeline_order(available_transforms(channels)):
             s = config.setting(spec.key)
             if s.enabled and s.p > 0:
                 t = spec.build(s.strength)

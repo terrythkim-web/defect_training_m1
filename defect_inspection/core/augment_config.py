@@ -33,6 +33,7 @@ TRANSFORM_INFO: list[TransformInfo] = [
     TransformInfo("gamma", "감마", "광학"),
     TransformInfo("hue_saturation", "색조/채도", "광학", color_only=True),
     TransformInfo("clahe", "CLAHE", "광학"),
+    TransformInfo("invert", "밝기 반전", "광학"),  # dark-on-light defects -> light-on-dark
     TransformInfo("gauss_noise", "가우시안 노이즈", "노이즈·블러"),
     TransformInfo("motion_blur", "모션 블러", "노이즈·블러"),
     TransformInfo("gaussian_blur", "가우시안 블러", "노이즈·블러"),
