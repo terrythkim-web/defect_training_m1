@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
         self.act_split_train = action(self.tr("Train으로 지정"), None, lambda: self.set_current_split("train"))
         self.act_split_val = action(self.tr("Val로 지정"), None, lambda: self.set_current_split("val"))
         self.act_split_auto = action(self.tr("Train/Val 자동"), None, lambda: self.set_current_split("auto"))
-        self.act_synthetic = action(self.tr("합성 이미지 (항상 Train)"), None, self.toggle_synthetic)
+        self.act_synthetic = action(self.tr("합성 이미지 (Train 전용)"), None, self.toggle_synthetic)
         self.act_synthetic.setCheckable(True)
         self._project_actions = [self.act_add_folder, self.act_save, self.act_toggle_ok, self.act_split_train,
                                  self.act_split_val, self.act_split_auto, self.act_synthetic]
@@ -1222,16 +1222,21 @@ class MainWindow(QMainWindow):
         if self.project is None or self.current_image is None:
             return
         group = self._group_of(self.current_image)
-        if split == "val" and any(self.project.image(p).synthetic for p in group):
-            self.statusBar().showMessage(
-                self.tr("합성 이미지(또는 합성 이미지와 같은 원본 묶음)는 Val로 지정할 수 없습니다"), 5000)
+        if split == "val" and self.project.image(self.current_image).synthetic:
+            self.statusBar().showMessage(self.tr("합성 이미지는 Val로 지정할 수 없습니다 (원본을 Val로 지정하세요)"), 5000)
             return
+        # Synthetic copies keep "auto": an original in Val leaves them out (dataset.excluded_synthetic)
+        copies = [p for p in group if self.project.image(p).synthetic]
         for path in group:
-            self.project.set_split(path, split)
+            if path not in copies:
+                self.project.set_split(path, split)
         self.mark_dirty()
         self.image_panel.refresh_marks(group)
         names = {"train": "Train", "val": "Val", "auto": self.tr("자동")}
-        extra = self.tr(" (같은 원본 묶음 {0}장 함께)").format(len(group) - 1) if len(group) > 1 else ""
+        extra = self.tr(" (같은 원본 묶음 {0}장 함께)").format(len(group) - 1 - len(copies)) \
+            if len(group) - len(copies) > 1 else ""
+        if split == "val" and copies:
+            extra += self.tr(", 합성 사본 {0}장은 데이터셋에서 제외").format(len(copies))
         self.statusBar().showMessage(self.tr("{0}: {1}(으)로 지정했습니다{2}").format(
             self.current_image, names[split], extra), 5000)
 
@@ -1245,9 +1250,10 @@ class MainWindow(QMainWindow):
             self.project.set_split(entry.path, "auto")  # a synthetic image is never measured on
         self.mark_dirty()
         self.act_synthetic.setChecked(entry.synthetic)
-        self.image_panel.refresh_marks([entry.path])
+        self.image_panel.refresh_marks(self._group_of(entry.path))
         self.statusBar().showMessage(
-            self.tr("합성 이미지로 표시했습니다: 같은 원본 묶음과 함께 항상 Train에 들어갑니다") if entry.synthetic
+            self.tr("합성 이미지로 표시했습니다: 원본 묶음이 Val로 지정돼 있으면 데이터셋에서 빠지고, "
+                    "아니면 묶음과 함께 Train에 들어갑니다") if entry.synthetic
             else self.tr("합성 이미지 표시를 해제했습니다"), 5000)
 
     def _on_current_image_changed(self, path: str | None) -> None:

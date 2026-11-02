@@ -164,7 +164,9 @@ class ImageListPanel(QWidget):
             return ""
         marks = []
         if entry.synthetic:
-            marks.append(self.tr("합성"))
+            from defect_inspection.core.dataset import excluded_synthetic
+
+            marks.append(self.tr("합성(제외)") if path in excluded_synthetic(self.project) else self.tr("합성"))
         if entry.split == "train":
             marks.append(self.tr("Train 지정"))
         elif entry.split == "val":

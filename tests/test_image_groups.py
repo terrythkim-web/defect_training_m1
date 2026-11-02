@@ -284,3 +284,78 @@ def test_split_by_hand_moves_the_whole_group(window, tmp_path, qapp, monkeypatch
     project_reloaded = window.project
     project_reloaded.save()
     assert Project.open(p.root).image("wide0_5.png").split == "train"
+
+
+# ---- original in Val, its synthetic copies left out ------------------------------------------------
+
+def synthetic_copy_project(tmp_path):
+    """wide1 + its slices form one group; wide1_2 (the slice with the defect) stands in for a
+    synthetic copy made from the original."""
+    p = make_project(tmp_path)
+    detect_groups(p)
+    p.set_synthetic("wide1_2.png")
+    return p
+
+
+def test_original_set_to_val_leaves_its_synthetic_copies_out(tmp_path):
+    from defect_inspection.core.compare import fair_val_images
+    from defect_inspection.core.dataset import excluded_synthetic
+
+    p = synthetic_copy_project(tmp_path)
+    p.set_split("wide1.png", "val")
+    assert excluded_synthetic(p) == {"wide1_2.png"}
+    defect, ok, skipped = select_images(p)
+    assert "wide1_2.png" not in [e.path for e in defect + ok] and "wide1_2.png" not in skipped
+    for seed in range(4):
+        p.config.split.seed = seed
+        split = split_images(p, defect, ok)
+        assert all(split[path] == "val" for path in ["wide1.png"] + [f"wide1_{k}.png" for k in (0, 1, 3, 4, 5)])
+    text = "\n".join(val_warnings(p, split_images(p, defect, ok), defect))
+    assert "합성 이미지 1장은 원본이 Val로 지정되어 데이터셋에서 뺐습니다" in text
+    assert "Train에만" not in text
+    assert "wide1.png" in fair_val_images(p) and "wide1_2.png" not in fair_val_images(p)
+
+
+def test_synthetic_copy_without_val_choice_still_trains(tmp_path):
+    from defect_inspection.core.dataset import excluded_synthetic
+
+    p = synthetic_copy_project(tmp_path)
+    for choice in ("auto", "train"):
+        p.set_split("wide1.png", choice)
+        assert excluded_synthetic(p) == set()
+        defect, ok, _ = select_images(p)
+        assert split_images(p, defect, ok)["wide1_2.png"] == "train"
+
+
+def test_full_and_crop_builds_leave_the_copies_out(tmp_path):
+    p = synthetic_copy_project(tmp_path)
+    p.set_split("wide1.png", "val")
+    report = build_full_dataset(p)
+    files = {f.stem for f in (p.dataset_dir / "full" / "images").rglob("*.png")}
+    assert "wide1" in {f.stem for f in (p.dataset_dir / "full" / "images" / "val").iterdir()}
+    assert not any(stem.startswith("wide1_2") for stem in files)
+    assert any("데이터셋에서 뺐습니다" in w for w in report.warnings)
+    p.config.crop = p.config.crop.model_copy(update={"crop_size": 128, "use_roi": False, "multiplier": 0})
+    build_crop_dataset(p)
+    assert not any(f.stem.startswith("wide1_2__") for f in (p.dataset_dir / "crop" / "images").rglob("*.png"))
+
+
+def test_window_val_on_a_group_with_a_synthetic_copy(window, tmp_path, qapp, monkeypatch):
+    p = make_project(tmp_path)
+    monkeypatch.setattr(QMessageBox, "show", lambda self: None)
+    window.load_project(p)
+    window._before_build()  # groups known
+    window.image_panel.select("wide1_2.png")
+    assert wait_until(qapp, lambda: window.current_image == "wide1_2.png")
+    window.act_synthetic.trigger()
+    window.act_split_val.trigger()  # the synthetic copy itself: refused
+    assert p.image("wide1_2.png").split == "auto" and "Val로 지정할 수 없습니다" in window.statusBar().currentMessage()
+    window.image_panel.select("wide1.png")
+    assert wait_until(qapp, lambda: window.current_image == "wide1.png")
+    window.act_split_val.trigger()  # the original: allowed, the copy is left out
+    assert p.image("wide1.png").split == "val" and p.image("wide1_0.png").split == "val"
+    assert p.image("wide1_2.png").split == "auto"
+    assert "1장은 데이터셋에서 제외" in window.statusBar().currentMessage()
+    assert "합성(제외)" in window.image_panel._item("wide1_2.png").text()
+    window.act_split_auto.trigger()
+    assert "합성(제외)" not in window.image_panel._item("wide1_2.png").text()

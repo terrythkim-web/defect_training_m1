@@ -74,9 +74,13 @@ class BuildReport:
 # ---- selection and split ---------------------------------------------------------------
 
 def select_images(project: Project) -> tuple[list[ImageEntry], list[ImageEntry], list[str]]:
-    """(defect images, OK images, skipped paths). Labels win over the OK flag."""
+    """(defect images, OK images, skipped paths). Labels win over the OK flag. Synthetic copies
+    of an original set to Val by hand (`excluded_synthetic`) are in none of the lists."""
     defect, ok, skipped = [], [], []
+    excluded = excluded_synthetic(project)
     for entry in project.config.images:
+        if entry.path in excluded:
+            continue
         status = project.label_status(entry)
         if status.confirmed > 0:
             defect.append(entry)
@@ -97,6 +101,22 @@ def split_units(project: Project, entries: list[ImageEntry]) -> dict[str, list[I
     return units
 
 
+def _manual_split(members: list[ImageEntry]) -> str:
+    """The first manual Train/Val choice of a unit's real (non-synthetic) members."""
+    return next((m.split for m in members if not m.synthetic and m.split != "auto"), "auto")
+
+
+def excluded_synthetic(project: Project) -> set[str]:
+    """Synthetic images left out of every dataset: the copies in a split unit whose original
+    (a real member) was put in Val by hand. In Train they would show the model the Val image's
+    background and defect; in Val one defect would count once per copy."""
+    out: set[str] = set()
+    for members in split_units(project, project.config.images).values():
+        if _manual_split(members) == "val":
+            out.update(m.path for m in members if m.synthetic)
+    return out
+
+
 def split_images(project: Project, defect: list[ImageEntry], ok: list[ImageEntry]) -> dict[str, Split]:
     """Stratified split: defect and OK units each follow the project's ratio, seed and manual
     overrides, so Val is never only OK images. A unit is a group of images cut from the same
@@ -104,17 +124,19 @@ def split_images(project: Project, defect: list[ImageEntry], ok: list[ImageEntry
     with any defect image counts as a defect unit, and the first manual split of a member
     applies to the whole group. Without groups every image is its own unit (same result as
     splitting the images directly). A unit with a synthetic image (made by the user from real
-    ones) always goes to Train: Val measures real defects only, and the real image it was made
-    from must not sit in Val while its copy trains."""
+    ones) goes to Train: Val measures real defects only, and the real image it was made from must
+    not sit in Val while its copy trains. Only when a real member was put in Val by hand does the
+    unit go to Val, and its synthetic copies are left out (`excluded_synthetic`, already dropped by
+    `select_images`)."""
     defect_paths = {e.path for e in defect}
     defect_units, ok_units = [], []
     units = split_units(project, defect + ok)
     unit_split: dict[str, Split] = {}
     for key, members in units.items():
-        if any(m.synthetic for m in members):
+        manual = _manual_split(members)
+        if manual != "val" and any(m.synthetic for m in members):
             unit_split[key] = "train"
             continue
-        manual = next((m.split for m in members if m.split != "auto"), "auto")
         unit = ImageEntry(path=key, split=manual)
         (defect_units if any(m.path in defect_paths for m in members) else ok_units).append(unit)
     unit_split.update(compute_split(defect_units, project.config.split))
@@ -146,6 +168,7 @@ def val_warnings(project: Project, split: dict[str, Split], defect: list[ImageEn
         counts[side] = [a + b for a, b in zip(counts[side], per_class)]
     grouped = sum(1 for member in project.config.source_groups if member in split)  # defect + OK images
     synthetic = [e.path for e in project.config.images if e.synthetic and e.path in split]
+    excluded = excluded_synthetic(project)
     warnings = []
     for i, name in enumerate(names):
         if counts["train"][i] + counts["val"][i] == 0:
@@ -167,6 +190,9 @@ def val_warnings(project: Project, split: dict[str, Split], defect: list[ImageEn
     if synthetic:
         warnings.append(f"합성 이미지 {len(synthetic)}장은 같은 원본 묶음과 함께 Train에만 두었고, "
                         "위 결함 수에서 뺐습니다.")
+    if excluded:
+        warnings.append(f"합성 이미지 {len(excluded)}장은 원본이 Val로 지정되어 데이터셋에서 뺐습니다 "
+                        "(원본 Val 측정이 사본 학습으로 부풀려지지 않도록).")
     if grouped:
         warnings.append(f"같은 원본에서 잘라낸 이미지 {grouped}장을 원본과 같은 쪽(Train/Val)에 두었습니다. "
                         "같은 결함이 두 번 학습되므로 원본이나 조각 중 한 종류만 쓰는 것을 권장합니다.")
