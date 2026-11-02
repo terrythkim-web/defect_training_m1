@@ -71,7 +71,7 @@ class DefectTransformSetting(BaseModel):
     scale_min: float = Field(default=0.8, ge=0.2, le=3.0)
     scale_max: float = Field(default=1.25, ge=0.2, le=3.0)
     max_angle: float = Field(default=30.0, ge=0.0, le=180.0)  # random angle in ±max_angle degrees
-    direction: Literal["both", "horizontal", "vertical"] = "both"
+    direction: Literal["both", "horizontal", "vertical", "edge"] = "both"  # edge: along the edge line it sits on
     max_shift: float = Field(default=0.5, ge=0.0, le=1.0)  # of the image width / height
     on_ok_images: bool = True
 

@@ -315,7 +315,8 @@ def build_crop_dataset(project: Project, progress: Progress | None = None,
                 raw = imread_unicode(project.image_abspath(entry))
                 if raw is not None:
                     image = to_training_8bit(raw, channels)
-                    patches.extend(extract_patches(image, project.load_labels(entry, size=image.shape[1::-1])))
+                    patches.extend(extract_patches(image, project.load_labels(entry, size=image.shape[1::-1]),
+                                                   context=dt.direction == "edge"))
         for index, entry in enumerate(entries):
             tick(index, 0.0, f"읽는 중: {entry.path}")
             src = project.image_abspath(entry)

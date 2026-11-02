@@ -448,6 +448,11 @@ class AugmentPanel(QWidget):
         self.dt_direction.addItem(self.tr("수평 + 수직"), "both")
         self.dt_direction.addItem(self.tr("수평만"), "horizontal")
         self.dt_direction.addItem(self.tr("수직만"), "vertical")
+        self.dt_direction.addItem(self.tr("테두리선 따라"), "edge")
+        self.dt_direction.setItemData(
+            3, self.tr("결함 주변(테두리선 등)이 원래 자리와 같은 모양인 곳에만 옮깁니다. 직선 위의 결함은 그 선을 따라 "
+                       "움직이고, 주변이 독특하면 조금만 움직이거나 그대로 둡니다. OK 이미지에서는 같은 모양의 "
+                       "선을 찾아 붙입니다."), Qt.ItemDataRole.ToolTipRole)
         self.dt_shift = QSpinBox()
         self.dt_shift.setRange(0, 100)
         self.dt_shift.setSuffix(self.tr(" % (이미지 크기 대비)"))

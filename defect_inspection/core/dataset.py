@@ -289,7 +289,7 @@ def build_full_dataset(project: Project, progress: Progress | None = None,
         for entry in defect:
             if (cp.enabled or dt_ok) and entry.path in loaded and split[entry.path] == "train":
                 image, ann, _, _ = loaded[entry.path]
-                patches.extend(extract_patches(image, ann))
+                patches.extend(extract_patches(image, ann, context=dt.enabled and dt.direction == "edge"))
             tick("결함 패치 수집")
 
         augmenter = Augmenter(aug_cfg, channels=channels, seed=cfg.split.seed)

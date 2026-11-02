@@ -3,9 +3,10 @@
 A patch is a labeled defect cut out of a training image: pixels, a soft (feathered) mask and
 the label in patch coordinates. Copy-Paste blends patches onto OK images unchanged. The defect
 transform (`DefectTransformSetting`) scales and rotates a patch by a random amount and places
-it shifted horizontally / vertically / both from where it was, inside the same image ("add"
-keeps the original defect, "move" fills its place from the surroundings with cv2.inpaint), and
-onto OK images. Labels travel with the pixels: a rotated defect gets the rotated outline as a
+it shifted horizontally / vertically / both from where it was, or along the edge line it sits on
+("edge": only where its surroundings repeat, core/edge_place), inside the same image ("add" keeps
+the original defect, "move" fills its place from the surroundings with cv2.inpaint), and onto
+OK images. Labels travel with the pixels: a rotated defect gets the rotated outline as a
 polygon (detect tasks then train on its bounding box).
 
 Coordinates: labels are continuous (pixel i covers [i, i+1)), OpenCV warps use pixel indices,
@@ -21,6 +22,15 @@ import numpy as np
 
 from defect_inspection.core.annotation import BBox, ImageAnnotations, Mask, Polygon
 from defect_inspection.core.augment_config import DefectTransformSetting
+from defect_inspection.core.edge_place import (
+    Context,
+    coarse_radius,
+    context_for,
+    gradient,
+    gray8,
+    match_centers,
+    refine,
+)
 
 Shape = BBox | Polygon | Mask
 PLACE_TRIES = 20
@@ -33,10 +43,12 @@ class Patch:
     shape: Shape  # in patch coordinates
     origin: tuple[int, int] = (0, 0)  # top-left in the source image
     source_size: tuple[int, int] = (0, 0)  # (width, height) of the source image
+    context: Context | None = None  # its surroundings, for placing it along an edge line
 
 
-def patch_for(image: np.ndarray, shape: Shape, max_fraction: float = 0.5) -> Patch | None:
-    """Cut one labeled defect out of an image; None if it is tiny or covers most of the image."""
+def patch_for(image: np.ndarray, shape: Shape, max_fraction: float = 0.5, context: bool = False) -> Patch | None:
+    """Cut one labeled defect out of an image; None if it is tiny or covers most of the image.
+    `context`: also keep its surroundings (direction "edge")."""
     h, w = image.shape[:2]
     x1, y1, x2, y2 = shape.bounds()
     x1, y1 = max(0, int(np.floor(x1))), max(0, int(np.floor(y1)))
@@ -59,12 +71,14 @@ def patch_for(image: np.ndarray, shape: Shape, max_fraction: float = 0.5) -> Pat
                                                "x2": shape.x2 - x1, "y2": shape.y2 - y1})
     else:
         local_shape = shape.model_copy(update={"points": local})
-    return Patch(image[y1:y2, x1:x2].copy(), soft.astype(np.float32), local_shape, (x1, y1), (w, h))
+    return Patch(image[y1:y2, x1:x2].copy(), soft.astype(np.float32), local_shape, (x1, y1), (w, h),
+                 context_for(image, shape) if context else None)
 
 
-def extract_patches(image: np.ndarray, annotations: ImageAnnotations, max_fraction: float = 0.5) -> list[Patch]:
+def extract_patches(image: np.ndarray, annotations: ImageAnnotations, max_fraction: float = 0.5,
+                    context: bool = False) -> list[Patch]:
     """Cut every confirmed defect out of a training image (pixels + soft mask + its label)."""
-    patches = (patch_for(image, s, max_fraction) for s in annotations.confirmed())
+    patches = (patch_for(image, s, max_fraction, context) for s in annotations.confirmed())
     return [p for p in patches if p is not None]
 
 
@@ -101,7 +115,7 @@ def transform_patch(patch: Patch, scale: float, angle: float) -> Patch:
     # where the transformed patch sits if it keeps the original centre
     cx, cy = patch.origin[0] + pw / 2, patch.origin[1] + ph / 2
     origin = (int(round(cx - size[0] / 2)), int(round(cy - size[1] / 2)))
-    return Patch(pixels, mask.astype(np.float32), shape, origin, patch.source_size)
+    return Patch(pixels, mask.astype(np.float32), shape, origin, patch.source_size, patch.context)
 
 
 def random_transform(patch: Patch, cfg: DefectTransformSetting, rng: np.random.Generator) -> Patch:
@@ -120,13 +134,16 @@ def _overlaps(box: tuple[float, float, float, float], shapes: list[Shape], margi
 
 
 def shifted_origin(patch: Patch, width: int, height: int, avoid: list[Shape], cfg: DefectTransformSetting,
-                   rng: np.random.Generator) -> tuple[int, int] | None:
+                   rng: np.random.Generator, image: np.ndarray | None = None) -> tuple[int, int] | None:
     """A free position near the patch's own: shifted by up to max_shift × image size along the
     allowed direction(s), kept inside the image and off `avoid`. Without a position in this
-    image's frame (other image size) anywhere free."""
+    image's frame (other image size) anywhere free. Direction "edge" needs `image` (the picture
+    the patch goes into) and the patch's context: see `edge_origin`."""
     ph, pw = patch.pixels.shape[:2]
     if pw >= width or ph >= height:
         return None
+    if cfg.direction == "edge":
+        return edge_origin(patch, image, avoid, cfg, rng)
     same_frame = patch.source_size == (width, height)
     for _ in range(PLACE_TRIES):
         if same_frame:
@@ -137,6 +154,40 @@ def shifted_origin(patch: Patch, width: int, height: int, avoid: list[Shape], cf
         else:
             ox, oy = int(rng.integers(0, width - pw + 1)), int(rng.integers(0, height - ph + 1))
         if not _overlaps((ox, oy, ox + pw, oy + ph), avoid):
+            return ox, oy
+    return None
+
+
+def edge_origin(patch: Patch, image: np.ndarray | None, avoid: list[Shape], cfg: DefectTransformSetting,
+                rng: np.random.Generator) -> tuple[int, int] | None:
+    """A free position where the patch's surroundings repeat in `image` (core/edge_place): along
+    the edge line it sits on, within max_shift × image size of its own place in the same image's
+    frame, anywhere in another image. The patch is never clipped onto a position, which would move
+    it off the line; None if no position fits."""
+    if patch.context is None or image is None:
+        return None
+    h, w = image.shape[:2]
+    ph, pw = patch.pixels.shape[:2]
+    centres = match_centers(image, patch.context)
+    if patch.source_size == (w, h) and len(centres):
+        own = (patch.origin[0] + pw / 2, patch.origin[1] + ph / 2)
+        near = (np.abs(centres[:, 0] - own[0]) <= cfg.max_shift * w) & (np.abs(centres[:, 1] - own[1]) <= cfg.max_shift * h)
+        centres = centres[near]
+    if not len(centres):
+        return None
+    radius = coarse_radius(image)
+    if radius:
+        gray = gray8(image)
+        grad = gradient(gray)  # once per placement, for refining at full size
+    for _ in range(PLACE_TRIES):
+        cx, cy = centres[int(rng.integers(len(centres)))]
+        if radius:
+            found = refine(gray, grad, patch.context, cx, cy, radius)
+            if found is None:
+                continue
+            cx, cy = found
+        ox, oy = int(round(cx - pw / 2)), int(round(cy - ph / 2))
+        if 0 <= ox <= w - pw and 0 <= oy <= h - ph and not _overlaps((ox, oy, ox + pw, oy + ph), avoid):
             return ox, oy
     return None
 
@@ -155,17 +206,21 @@ def blend(image: np.ndarray, patch: Patch, ox: int, oy: int) -> Shape:
     return Polygon(class_id=s.class_id, points=[(x + ox, y + oy) for x, y in s.points])
 
 
+def defect_mask(shape: Shape, width: int, height: int, grow: int = 3) -> np.ndarray:
+    """uint8 mask (255) of a defect's pixels in a width x height image, grown by `grow` px."""
+    if isinstance(shape, Mask):
+        mask = shape.full_pixels(width, height).astype(np.uint8) * 255
+    else:
+        mask = np.zeros((height, width), np.uint8)
+        pts = np.round((np.array(shape.to_points(), np.float32) - 0.5) * 16).astype(np.int32)
+        cv2.fillPoly(mask, [pts], 255, shift=4)
+    return cv2.dilate(mask, np.ones((2 * grow + 1, 2 * grow + 1), np.uint8)) if grow > 0 else mask
+
+
 def erase(image: np.ndarray, shape: Shape, grow: int = 3) -> np.ndarray:
     """Fill a defect's place from its surroundings (cv2.inpaint), for the "move" mode."""
     h, w = image.shape[:2]
-    if isinstance(shape, Mask):
-        mask = shape.full_pixels(w, h).astype(np.uint8) * 255
-    else:
-        mask = np.zeros((h, w), np.uint8)
-        pts = np.round((np.array(shape.to_points(), np.float32) - 0.5) * 16).astype(np.int32)
-        cv2.fillPoly(mask, [pts], 255, shift=4)
-    mask = cv2.dilate(mask, np.ones((2 * grow + 1, 2 * grow + 1), np.uint8))
-    return cv2.inpaint(image, mask, 5, cv2.INPAINT_TELEA)
+    return cv2.inpaint(image, defect_mask(shape, w, h, grow), 5, cv2.INPAINT_TELEA)
 
 
 def transform_defects(image: np.ndarray, annotations: ImageAnnotations, cfg: DefectTransformSetting,
@@ -182,12 +237,12 @@ def transform_defects(image: np.ndarray, annotations: ImageAnnotations, cfg: Def
     placed = 0
     for i in rng.permutation(len(shapes))[:cfg.max_defects]:
         source = shapes[int(i)]
-        patch = patch_for(image, source)
+        patch = patch_for(image, source, context=cfg.direction == "edge")
         if patch is None:
             continue
         moved = random_transform(patch, cfg, rng)
         avoid = [s for s in kept if s is not source] if cfg.mode == "move" else kept
-        where = shifted_origin(moved, w, h, avoid, cfg, rng)
+        where = shifted_origin(moved, w, h, avoid, cfg, rng, image)
         if where is None:
             continue
         if cfg.mode == "move":
@@ -211,7 +266,7 @@ def paste_patches(image: np.ndarray, annotations: ImageAnnotations, patches: lis
         patch = patches[int(rng.integers(len(patches)))]
         if transform is not None:
             patch = random_transform(patch, transform, rng)
-            where = shifted_origin(patch, w, h, shapes, transform, rng)
+            where = shifted_origin(patch, w, h, shapes, transform, rng, image)
             if where is not None:
                 shapes.append(blend(out, patch, *where))
             continue
