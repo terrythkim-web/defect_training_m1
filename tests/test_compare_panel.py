@@ -185,3 +185,17 @@ def test_rerun_from_report(panel, window, qapp, monkeypatch):
     assert sorted(r.spec.train.dataset for r in new) == ["crop", "full"]
     for r in new:
         assert r.spec.train == old[r.spec.train.dataset]  # exactly the reported settings
+
+
+def test_unet_runs_are_listed_and_compared(panel, window, qapp):
+    from test_compare import MaskBlobModel, BlobModel, add_unet_run
+
+    from defect_inspection.core.model_zoo import is_unet
+
+    unet_run = str(add_unet_run(window.project))
+    panel.make_predictor = lambda w, spec, d: MaskBlobModel([]) if is_unet(spec.train.model) else BlobModel([])
+    panel.refresh_runs()
+    assert panel.run_list.count() == 3
+    assert any("unetpp-r18" in panel.run_list.item(i).text() for i in range(3))
+    compared(panel, qapp, [window.test_runs[0], unet_run])
+    assert [r.training.model for r in panel.results] == ["yolo11n", "unetpp-r18"]

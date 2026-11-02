@@ -6,7 +6,9 @@ NMS IoU. Full models predict the whole image; crop models use tiling inference (
 own Ultralytics val metrics are kept next to it, but they were measured on different images
 (whole images vs crops) and are not comparable.
 
-Metrics are box-based for both tasks (a seg prediction is compared by its bounding box):
+Metrics are box-based for every model (`compare_iou`): a seg polygon or a U-Net++ mask prediction is
+compared by its bounding box, also against a brush (Mask) label — the Result tab's pixel IoU for
+mask vs mask would judge U-Net++ by a stricter rule than YOLO on the same labels:
 - Precision / Recall / F1 at `conf`, IoU >= 0.5, same class (greedy by score, as in the Result tab).
 - mAP50 and mAP50-95: COCO-style 101-point AP per class from predictions down to conf 0.001,
   averaged over classes that have ground truth.
@@ -26,7 +28,8 @@ import numpy as np
 from defect_inspection.core.annotation import BBox, Polygon
 from defect_inspection.core.dataset import select_images, split_images
 from defect_inspection.core.edge_filter_config import EdgeFilterConfig
-from defect_inspection.core.evaluate import MATCH_IOU, Prediction, box_iou, load_training_image, match, shape_iou  # noqa: F401 (match re-exported)
+from defect_inspection.core.evaluate import MATCH_IOU, Prediction, box_iou, load_training_image
+from defect_inspection.core.evaluate import match as _match
 from defect_inspection.core.project import Project
 from defect_inspection.core.trainer import EpochSeries, RunSpec, TrainConfig, load_spec, read_events, read_status, weights_paths
 
@@ -37,6 +40,16 @@ SIZE_BINS = (("small", 0.0, 32.0 ** 2), ("medium", 32.0 ** 2, 96.0 ** 2), ("larg
 SPEED_IMAGES = 5  # images timed per device (after one warm-up)
 PRIORITY_METRICS = {"mAP50-95": "map50_95", "mAP50": "map50", "Recall": "recall", "Precision": "precision",
                     "F1": "f1"}
+
+
+def compare_iou(a, b) -> float:
+    """Box IoU of two shapes — the one matching rule for every model type in the comparison."""
+    return box_iou(a.bounds(), b.bounds())
+
+
+def match(ground_truth: list, predictions: list[Prediction], iou: float = MATCH_IOU) -> tuple[list[bool], list[bool]]:
+    """Result-tab matching (greedy by score, same class) with the comparison's box IoU."""
+    return _match(ground_truth, predictions, iou, compare_iou)
 
 
 # ---- data ------------------------------------------------------------------------------------
@@ -172,7 +185,7 @@ def pr_points(images: list[ImagePredictions], class_id: int | None, iou_thr: flo
         for gi, g in enumerate(images[k].ground_truth):
             if used[k][gi] or g.class_id != p.shape.class_id:
                 continue
-            v = shape_iou(g, p.shape)
+            v = compare_iou(g, p.shape)
             if v >= best_iou:
                 best, best_iou = gi, v
         if best >= 0:
@@ -505,6 +518,10 @@ def own_map(r: RunComparison) -> float | None:
     return m.get("metrics/mAP50-95(B)", m.get("metrics/mAP50-95(M)"))
 
 
+def own_iou(r: RunComparison) -> float | None:
+    return r.own_metrics.get("metrics/IoU")  # U-Net++ runs (pixel IoU on their own val)
+
+
 def metric_rows(results: list[RunComparison]) -> list[MetricRow]:
     """Rows of the comparison table (F8.3), in display order."""
     rows: list[MetricRow] = []
@@ -546,6 +563,8 @@ def metric_rows(results: list[RunComparison]) -> list[MetricRow]:
     text("best.pt 크기", lambda r: file_size_text(r.training.weights_bytes))
     text("ONNX 크기", lambda r: file_size_text(r.training.onnx_bytes) if r.training.onnx_bytes else "내보내기 전")
     metric("참고: 자체 val mAP50-95 (데이터셋별, 직접 비교 불가)", own_map, None)
+    if any(own_iou(r) is not None for r in results):
+        metric("참고: 자체 val IoU (U-Net++, 픽셀 기준, 직접 비교 불가)", own_iou, None)
     return rows
 
 

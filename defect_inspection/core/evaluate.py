@@ -147,8 +147,10 @@ class ImageResult:
         return "missed" if self.fn else "false" if self.fp else "ok"
 
 
-def match(ground_truth: list[Shape], predictions: list[Prediction], iou: float = MATCH_IOU) -> tuple[list[bool], list[bool]]:
-    """(matched per prediction, missed per ground truth), greedy by prediction score."""
+def match(ground_truth: list[Shape], predictions: list[Prediction], iou: float = MATCH_IOU,
+          iou_fn=shape_iou) -> tuple[list[bool], list[bool]]:
+    """(matched per prediction, missed per ground truth), greedy by prediction score. `iou_fn`
+    (default `shape_iou`) scores a pair; the Compare tab passes a box IoU for every model."""
     used = [False] * len(ground_truth)
     matched = [False] * len(predictions)
     for pi in sorted(range(len(predictions)), key=lambda i: -predictions[i].score):
@@ -157,7 +159,7 @@ def match(ground_truth: list[Shape], predictions: list[Prediction], iou: float =
         for gi, gt in enumerate(ground_truth):
             if used[gi] or gt.class_id != pred.class_id:
                 continue
-            v = shape_iou(gt, pred)
+            v = iou_fn(gt, pred)
             if v >= best_iou:
                 best, best_iou = gi, v
         if best >= 0:

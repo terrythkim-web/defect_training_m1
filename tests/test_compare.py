@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from defect_inspection.core import compare as C
-from defect_inspection.core.annotation import BBox
+from defect_inspection.core.annotation import BBox, Mask
 from defect_inspection.core.crop import TiledPredictor, build_crop_dataset
 from defect_inspection.core.crop_config import CropConfig
 from defect_inspection.core.dataset import build_full_dataset
@@ -240,3 +240,78 @@ def test_mismatched_run_refused(project_with_runs):
     p.add_class("scratch")
     with pytest.raises(ValueError, match="클래스"):
         C.compare_runs(p, [full_run], make_predictor=lambda w, s, d: BlobModel([]), devices=[])
+
+
+# ---- U-Net++ runs (masks) in the comparison -------------------------------------------------------
+
+def diagonal_mask(x0, y0, n, cls=0, **fields):
+    """A 3 px wide diagonal line in an n x n box: pixel IoU with a shifted copy is low, box IoU high."""
+    pixels = np.zeros((n, n), bool)
+    for i in range(n):
+        pixels[i, max(0, i - 1):i + 2] = True
+    return Mask.from_pixels(pixels, (x0, y0), class_id=cls, **fields)
+
+
+def test_masks_are_matched_by_box_like_every_other_model():
+    gt = diagonal_mask(10, 10, 40)
+    flipped = Mask.from_pixels(np.fliplr(gt.pixels()), (10, 10), class_id=0, status="suggested",
+                               source="model", score=0.9)  # same box, crossing line: pixel IoU ~0.04
+    m = C.compute_metrics([im("a", [gt], [Prediction(flipped)])], ["dent"], conf=0.25)
+    assert m.tp == 1 and m.fp == 0 and m.map50 == pytest.approx(1.0)
+    a = C.RunComparison("a", "A", 0.25, 0.7, m, {}, {}, None, {}, images=[im("a", [gt], [Prediction(flipped)])])
+    assert C.differing_images(a, a) == [("a", 0)]
+
+
+class MaskBlobModel(BlobModel):
+    """Fake U-Net++: the blobs as Mask predictions."""
+
+    def predict(self, image8, conf=0.25, iou=0.7):
+        gray = image8[..., 0]
+        n, labels, stats, _ = cv2.connectedComponentsWithStats((gray < 100).astype(np.uint8))
+        out = []
+        for i in range(1, n):
+            score = min(0.99, stats[i][4] / 400)
+            if score >= conf:
+                out.append(Prediction(Mask.from_pixels(labels == i, class_id=0, status="suggested",
+                                                       source="model", score=score)))
+        return out
+
+
+def add_unet_run(p):
+    run = prepare_run(p, TrainConfig(model="unetpp-r18", imgsz=128, epochs=2, dataset="full"), p.root / "w")
+    best, _ = weights_paths(run)
+    best.parent.mkdir(parents=True)
+    best.write_bytes(b"u" * 500)
+    with open(run / "events.jsonl", "w", encoding="utf-8") as f:
+        for e in (1, 2):
+            f.write(json.dumps({"type": "epoch", "epoch": e, "epochs": 2, "fitness": 0.3 * e, "elapsed_s": 5.0 * e,
+                                "losses": {"train/seg_loss": 1 / e}, "metrics": {"metrics/IoU": 0.3 * e}}) + "\n")
+    write_status(run, {"state": "finished", "final_metrics": {"metrics/IoU": 0.6, "metrics/Dice": 0.7}})
+    return run
+
+
+def test_unet_run_compared_with_yolo(project_with_runs):
+    from defect_inspection.core.model_zoo import is_unet
+
+    p, (full_run, _) = project_with_runs
+    unet_run = add_unet_run(p)
+
+    def factory(weights, spec, device):
+        return MaskBlobModel([]) if is_unet(spec.train.model) else BlobModel([])
+
+    yolo, unet = C.compare_runs(p, [full_run, unet_run], make_predictor=factory, devices=[("CPU", "cpu")])
+    assert [im.path for im in unet.images] == [im.path for im in yolo.images]
+    assert unet.metrics.recall == pytest.approx(yolo.metrics.recall) == pytest.approx(1.0)
+    assert unet.metrics.map50 == pytest.approx(1.0) and unet.training.model == "unetpp-r18"
+    assert unet.training.best_epoch == 2 and set(unet.speed_ms) == {"CPU"}
+    rows = {r.label: r for r in C.metric_rows([yolo, unet])}
+    own_map = next(r for r in rows.values() if "자체 val mAP50-95" in r.label)
+    own_iou = next(r for r in rows.values() if "자체 val IoU" in r.label)
+    assert own_map.texts == ["0.500", "-"] and own_iou.texts == ["-", "0.600"]
+    assert json.dumps(unet.summary())
+
+
+def test_own_iou_row_only_with_unet_runs(project_with_runs):
+    p, runs = project_with_runs
+    results = C.compare_runs(p, runs, make_predictor=blob_factory(), devices=[])
+    assert not any("IoU" in r.label for r in C.metric_rows(results))
